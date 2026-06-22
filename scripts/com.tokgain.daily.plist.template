@@ -13,6 +13,8 @@
     <string>collect</string>
     <string>--tool</string>
     <string>auto</string>
+    <string>--model</string>
+    <string>__TOKGAIN_MODEL__</string>
   </array>
 
   <key>StartCalendarInterval</key>
