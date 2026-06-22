@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from .adapters import ADAPTERS
+from .adapters.common import AdapterError
+from .pricing import estimate_usd, load_prices
+from .store import SCHEMA_VERSION, append_events, build_daily_summary, build_week_summary, ensure_data_dir, read_events, update_state, write_daily_summary
+
+DEFAULT_DATA_DIR = Path("~/.local/state/tokgain").expanduser()
+MODEL_MISSING = "model_missing"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 2
+    try:
+        if args.command == "collect":
+            return cmd_collect(args)
+        if args.command == "report":
+            return cmd_report(args)
+        if args.command == "show":
+            return cmd_show(args)
+        if args.command == "export":
+            return cmd_export(args)
+        if args.command == "doctor":
+            return cmd_doctor(args)
+        if args.command == "prices":
+            return cmd_prices(args)
+    except BrokenPipeError:
+        return 1
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        print(f"tokgain: {exc}", file=os.sys.stderr)
+        return 1
+    return 2
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tokgain",
+        description="Collect reported token savings from coding-agent compression tools into local JSONL.",
+    )
+    parser.add_argument("--data-dir", default=os.environ.get("TOKGAIN_DATA_DIR", str(DEFAULT_DATA_DIR)), help="state directory (default: ~/.local/state/tokgain)")
+    parser.add_argument("--prices", default=os.environ.get("TOKGAIN_PRICES"), help="prices.json path (default: packaged placeholder table)")
+
+    sub = parser.add_subparsers(dest="command")
+
+    collect = sub.add_parser("collect", help="collect savings events")
+    collect.add_argument("--tool", action="append", choices=["auto", "all", *ADAPTERS.keys()], default=None, help="tool to collect; repeatable; default auto")
+    collect.add_argument("--date", default=None, help="period date YYYY-MM-DD; default yesterday")
+    collect.add_argument("--model", default=None, help="explicit model override for all collected events")
+    collect.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    collect.add_argument("--allow-errors", action="store_true", help="return 0 even when selected adapters fail")
+
+    report = sub.add_parser("report", help="print day/week summary")
+    report.add_argument("--period", choices=["day", "week"], default="day")
+    report.add_argument("--date", default=None, help="day or week end date YYYY-MM-DD; default yesterday")
+    report.add_argument("--json", action="store_true", help="print JSON summary")
+
+    show = sub.add_parser("show", help="print recent JSONL events")
+    show.add_argument("--tool", choices=list(ADAPTERS.keys()), default=None)
+    show.add_argument("--status", choices=["ok", "error"], default=None)
+    show.add_argument("--limit", type=int, default=20)
+
+    export = sub.add_parser("export", help="export collected events")
+    export.add_argument("--format", choices=["jsonl", "json"], default="jsonl")
+
+    doctor = sub.add_parser("doctor", help="show adapter/source availability")
+    doctor.add_argument("--json", action="store_true")
+
+    prices = sub.add_parser("prices", help="inspect price table")
+    prices_sub = prices.add_subparsers(dest="prices_command")
+    prices_sub.add_parser("show", help="print active prices.json")
+
+    return parser
+
+
+def cmd_collect(args: argparse.Namespace) -> int:
+    data_dir = ensure_data_dir(args.data_dir)
+    period = args.date or _default_period_date()
+    prices = load_prices(args.prices)
+    metadata = _load_metadata(args.metadata)
+    tools = _resolve_tools(args.tool)
+
+    events: list[dict[str, Any]] = []
+    for tool in tools:
+        adapter = ADAPTERS[tool]
+        try:
+            raw_records = _filter_records_for_period(adapter.collect(), period)
+            for raw in raw_records:
+                events.append(_finalize_ok_event(raw, period=period, prices=prices, cli_model=args.model, metadata=metadata))
+        except AdapterError as exc:
+            events.append(_error_event(tool, period=period, error=str(exc), cli_model=args.model, metadata=metadata))
+
+    append_events(data_dir, events)
+    write_daily_summary(data_dir, period)
+    update_state(data_dir, date=period, events=events)
+
+    ok_count = sum(1 for event in events if event.get("status") == "ok")
+    error_count = sum(1 for event in events if event.get("status") == "error")
+    print(json.dumps({"date": period, "ok": ok_count, "errors": error_count, "events": len(events)}, ensure_ascii=False))
+    if error_count and not args.allow_errors:
+        return 1
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    date = args.date or _default_period_date()
+    if args.period == "week":
+        summary = build_week_summary(args.data_dir, date)
+    else:
+        summary = build_daily_summary(args.data_dir, date)
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        totals = summary["totals"]
+        print(f"{summary['label']} saved={totals['reported_saved_tokens']} tokens usd=${totals['reported_saved_usd']:.6f} events={summary['event_count']} errors={summary['error_count']}")
+        for tool, bucket in summary.get("by_tool", {}).items():
+            print(f"  {tool}: {bucket['reported_saved_tokens']} tokens ${bucket['reported_saved_usd']:.6f} ({bucket['event_count']} events)")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    events = read_events(args.data_dir)
+    if args.tool:
+        events = [event for event in events if event.get("tool") == args.tool]
+    if args.status:
+        events = [event for event in events if event.get("status") == args.status]
+    if args.limit >= 0:
+        events = events[-args.limit:]
+    for event in events:
+        print(json.dumps(event, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    events = read_events(args.data_dir)
+    if args.format == "json":
+        print(json.dumps(events, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        for event in events:
+            print(json.dumps(event, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    payload = {
+        "data_dir": str(Path(args.data_dir).expanduser()),
+        "prices": str(Path(args.prices).expanduser()) if args.prices else "packaged:tokgain/data/prices.json",
+        "adapters": {tool: {"available": adapter.available()} for tool, adapter in ADAPTERS.items()},
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(f"data_dir: {payload['data_dir']}")
+        print(f"prices: {payload['prices']}")
+        for tool, info in payload["adapters"].items():
+            print(f"{tool}: {'ok' if info['available'] else 'missing'}")
+    return 0
+
+
+def cmd_prices(args: argparse.Namespace) -> int:
+    if args.prices_command != "show":
+        print("tokgain prices: expected subcommand 'show'", file=os.sys.stderr)
+        return 2
+    print(json.dumps(load_prices(args.prices), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def _resolve_tools(requested: list[str] | None) -> list[str]:
+    if not requested or "auto" in requested:
+        available = [tool for tool, adapter in ADAPTERS.items() if adapter.available()]
+        return available or ["rtk"]
+    if "all" in requested:
+        return list(ADAPTERS.keys())
+    # Preserve order and remove duplicates.
+    seen: set[str] = set()
+    result: list[str] = []
+    for tool in requested:
+        if tool not in seen:
+            result.append(tool)
+            seen.add(tool)
+    return result
+
+
+def _filter_records_for_period(records: list[dict[str, Any]], period: str) -> list[dict[str, Any]]:
+    has_perioded_records = any(raw.get("period") not in (None, "") for raw in records)
+    if has_perioded_records:
+        return [raw for raw in records if raw.get("period") == period]
+    return records
+
+
+def _finalize_ok_event(raw: dict[str, Any], *, period: str, prices: dict[str, Any], cli_model: str | None, metadata: dict[str, Any]) -> dict[str, Any]:
+    model = _resolve_model(cli_model=cli_model, metadata=metadata, raw=raw)
+    incomplete = model == MODEL_MISSING
+    event: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "ok",
+        "ts": _now_iso(),
+        "period": raw.get("period") or period,
+        "tool": raw.get("tool"),
+        "layer": raw.get("layer"),
+        "model": model,
+        "saved_tokens": int(raw.get("saved_tokens") or 0),
+        "saved_input_tokens": raw.get("saved_input_tokens"),
+        "saved_output_tokens": raw.get("saved_output_tokens"),
+        "source_ref": raw.get("source_ref"),
+        "session_id": raw.get("session_id") or metadata.get("session_id") or _env_first("CODEX_SESSION_ID", "CLAUDE_SESSION_ID", "HERMES_SESSION_ID"),
+        "incomplete": incomplete,
+        "exclude_from_totals": incomplete,
+        "raw": raw.get("raw"),
+    }
+    usd, price_version, estimate_mode, price_missing = estimate_usd(event, prices)
+    # Prefer source-provided USD only when the price table cannot price it and the source had a number.
+    if price_missing and raw.get("usd_saved_estimate") is not None:
+        usd = round(float(raw["usd_saved_estimate"]), 10)
+        estimate_mode = "source_reported"
+    event.update(
+        {
+            "estimate_mode": estimate_mode,
+            "usd_saved_estimate": usd,
+            "price_table_version": price_version,
+            "price_missing": price_missing,
+        }
+    )
+    return event
+
+
+def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, metadata: dict[str, Any]) -> dict[str, Any]:
+    model = _resolve_model(cli_model=cli_model, metadata=metadata, raw={})
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "error",
+        "ts": _now_iso(),
+        "period": period,
+        "tool": tool,
+        "layer": None,
+        "model": model,
+        "saved_tokens": 0,
+        "saved_input_tokens": None,
+        "saved_output_tokens": None,
+        "estimate_mode": "none",
+        "usd_saved_estimate": 0.0,
+        "price_table_version": None,
+        "price_missing": True,
+        "source_ref": tool,
+        "session_id": metadata.get("session_id") or _env_first("CODEX_SESSION_ID", "CLAUDE_SESSION_ID", "HERMES_SESSION_ID"),
+        "incomplete": model == MODEL_MISSING,
+        "exclude_from_totals": True,
+        "error": error,
+    }
+
+
+def _resolve_model(*, cli_model: str | None, metadata: dict[str, Any], raw: dict[str, Any]) -> str:
+    return (
+        cli_model
+        or metadata.get("model")
+        or raw.get("model")
+        or _env_first("TOKGAIN_MODEL", "CODEX_MODEL", "CLAUDE_MODEL", "OPENAI_MODEL", "ANTHROPIC_MODEL")
+        or MODEL_MISSING
+    )
+
+
+def _load_metadata(path: str | None) -> dict[str, Any]:
+    candidate = path or os.environ.get("TOKGAIN_SESSION_METADATA")
+    if not candidate:
+        return {}
+    metadata_path = Path(candidate).expanduser()
+    if not metadata_path.exists():
+        return {}
+    with metadata_path.open("r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _env_first(*keys: str) -> str | None:
+    for key in keys:
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
+def _default_period_date() -> str:
+    return (datetime.now().astimezone().date() - timedelta(days=1)).isoformat()
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

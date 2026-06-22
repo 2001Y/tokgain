@@ -1,0 +1,6 @@
+{
+  "version": "2026-06-22-manual",
+  "currency": "USD",
+  "models": {},
+  "notes": "Fill model prices manually. Unknown models keep usd_saved_estimate=0 and price_missing=true."
+}
