@@ -119,6 +119,9 @@
 
 ```bash
 tokgain collect --tool auto --model gpt-5.5
+tokgain bench --tool rg --layer search-output --model gpt-5.5 \
+  --baseline-cmd 'rg "TODO|FIXME" .' \
+  --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
 tokgain report --period day --date 2026-06-21
 tokgain report --period week --date 2026-06-21
 tokgain show --tool rtk
@@ -127,6 +130,18 @@ tokgain doctor
 tokgain prices show
 tokgain prices refresh
 ```
+
+## Benchmark 方針
+
+native ledger が無いツールは `tokgain bench` で baseline / optimized の出力を同じ tokenizer で測る。
+
+対象例:
+
+- `rg` / `ast-grep` / `fff-mcp` などの検索・構造把握出力
+- `tokensaver` / `contextmode` / `codereviewgraph` など、環境に後から追加される可能性がある context 圧縮系
+- Claude Code / Codex / Hermes の手動生成した圧縮前後ログ
+
+`bench` は adapter 名に縛られず任意の `--tool` を受ける。`saved_tokens = baseline_tokens - optimized_tokens` とし、悪化は負数のまま `events.jsonl` に残す。これにより「効いた時だけ記録する」バイアスを避ける。
 
 ## エラー方針
 

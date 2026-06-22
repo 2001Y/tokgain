@@ -255,6 +255,152 @@ def test_explicit_missing_adapter_records_error_and_returns_nonzero(tmp_path):
     assert daily["errors"][0]["tool"] == "h5i"
 
 
+def test_bench_file_pair_writes_measured_savings_event(tmp_path):
+    baseline = tmp_path / "baseline.txt"
+    optimized = tmp_path / "optimized.txt"
+    baseline.write_text("alpha beta gamma delta\n", encoding="utf-8")
+    optimized.write_text("alpha delta\n", encoding="utf-8")
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "--prices",
+            str(prices),
+            "bench",
+            "--tool",
+            "rg",
+            "--layer",
+            "search-output",
+            "--date",
+            "2026-06-21",
+            "--model",
+            "gpt-test",
+            "--baseline-file",
+            str(baseline),
+            "--optimized-file",
+            str(optimized),
+            "--tokenizer",
+            "regex",
+        ]
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    summary = json.loads(result.stdout)
+    assert summary["saved_tokens"] == 2
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["status"] == "ok"
+    assert event["tool"] == "rg"
+    assert event["layer"] == "search-output"
+    assert event["saved_tokens"] == 2
+    assert event["saved_input_tokens"] == 2
+    assert event["estimate_mode"] == "prompt_equivalent"
+    assert event["usd_saved_estimate"] == 0.000002
+    assert event["raw"]["measurement"]["baseline_tokens"] == 4
+    assert event["raw"]["measurement"]["optimized_tokens"] == 2
+    assert event["raw"]["measurement"]["token_count_mode"] == "regex_v1"
+    daily = json.loads((data_dir / "daily" / "2026-06-21.json").read_text(encoding="utf-8"))
+    assert daily["by_tool"]["rg"]["reported_saved_tokens"] == 2
+
+
+def test_bench_command_failure_records_error_event(tmp_path):
+    data_dir = tmp_path / "state"
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "bench",
+            "--tool",
+            "ast-grep",
+            "--layer",
+            "ast-search",
+            "--date",
+            "2026-06-21",
+            "--model",
+            "gpt-test",
+            "--baseline-cmd",
+            "printf ok",
+            "--optimized-cmd",
+            "python3 -c 'import sys; sys.exit(7)'",
+            "--tokenizer",
+            "regex",
+        ]
+    )
+
+    assert result.returncode == 1
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["status"] == "error"
+    assert event["tool"] == "ast-grep"
+    assert event["layer"] == "ast-search"
+    assert "optimized command failed" in event["error"]
+
+
+def test_bench_timeout_records_wrapped_error_event(tmp_path):
+    data_dir = tmp_path / "state"
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "bench",
+            "--tool",
+            "contextmode",
+            "--layer",
+            "agent-context",
+            "--date",
+            "2026-06-21",
+            "--model",
+            "gpt-test",
+            "--baseline-cmd",
+            "printf ok",
+            "--optimized-cmd",
+            "python3 -c 'import time; time.sleep(2)'",
+            "--timeout",
+            "1",
+            "--tokenizer",
+            "regex",
+        ]
+    )
+
+    assert result.returncode == 1
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["status"] == "error"
+    assert event["tool"] == "contextmode"
+    assert event["layer"] == "agent-context"
+    assert "timed out" in event["error"]
+
+
+def test_show_accepts_benchmark_only_tool_names(tmp_path):
+    data_dir = tmp_path / "state"
+    (data_dir / "daily").mkdir(parents=True)
+    event = {
+        "schema_version": 1,
+        "status": "ok",
+        "ts": "2026-06-22T00:00:00+09:00",
+        "period": "2026-06-21",
+        "tool": "contextmode",
+        "layer": "agent-context",
+        "model": "gpt-test",
+        "saved_tokens": 10,
+        "saved_input_tokens": 10,
+        "saved_output_tokens": None,
+        "estimate_mode": "prompt_equivalent",
+        "usd_saved_estimate": 0.00001,
+        "price_table_version": "test-prices",
+        "source_ref": "manual",
+        "session_id": "s1",
+        "incomplete": False,
+        "exclude_from_totals": False,
+    }
+    (data_dir / "events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    show = run_cli(["--data-dir", str(data_dir), "show", "--tool", "contextmode", "--limit", "1"])
+
+    assert show.returncode == 0, show.stderr + show.stdout
+    assert json.loads(show.stdout)["tool"] == "contextmode"
+
+
 def test_report_show_export_and_prices_commands(tmp_path):
     data_dir = tmp_path / "state"
     (data_dir / "daily").mkdir(parents=True)

@@ -9,6 +9,7 @@ from typing import Any
 
 from .adapters import ADAPTERS
 from .adapters.common import AdapterError
+from .bench import BenchError, build_benchmark_record
 from .pricing import estimate_usd, load_prices
 from .store import SCHEMA_VERSION, append_events, build_daily_summary, build_week_summary, ensure_data_dir, read_events, update_state, write_daily_summary
 
@@ -25,6 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "collect":
             return cmd_collect(args)
+        if args.command == "bench":
+            return cmd_bench(args)
         if args.command == "report":
             return cmd_report(args)
         if args.command == "show":
@@ -62,13 +65,30 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
     collect.add_argument("--allow-errors", action="store_true", help="return 0 even when selected adapters fail")
 
+    bench = sub.add_parser("bench", help="measure one baseline vs optimized output pair and append a savings event")
+    bench.add_argument("--tool", required=True, help="tool or service being measured, e.g. rg, ast-grep, fff, contextmode")
+    bench.add_argument("--layer", default="benchmark", help="measurement layer, e.g. search-output, agent-context, code-review")
+    bench.add_argument("--date", default=None, help="period date YYYY-MM-DD; default yesterday")
+    bench.add_argument("--model", default=None, help="explicit model override for the benchmark event")
+    bench.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    bench.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    bench.add_argument("--source-ref", default=None, help="human-readable benchmark source reference")
+    bench.add_argument("--baseline-file", default=None, help="raw/baseline output file")
+    bench.add_argument("--optimized-file", default=None, help="compressed/optimized output file")
+    bench.add_argument("--baseline-cmd", default=None, help="command that prints raw/baseline output")
+    bench.add_argument("--optimized-cmd", default=None, help="command that prints compressed/optimized output")
+    bench.add_argument("--cwd", default=None, help="working directory for --*-cmd")
+    bench.add_argument("--timeout", type=int, default=30, help="command timeout seconds")
+    bench.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
+    bench.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+
     report = sub.add_parser("report", help="print day/week summary")
     report.add_argument("--period", choices=["day", "week"], default="day")
     report.add_argument("--date", default=None, help="day or week end date YYYY-MM-DD; default yesterday")
     report.add_argument("--json", action="store_true", help="print JSON summary")
 
     show = sub.add_parser("show", help="print recent JSONL events")
-    show.add_argument("--tool", choices=list(ADAPTERS.keys()), default=None)
+    show.add_argument("--tool", default=None, help="filter by tool name; accepts adapter or benchmark-only names")
     show.add_argument("--status", choices=["ok", "error"], default=None)
     show.add_argument("--limit", type=int, default=20)
 
@@ -113,6 +133,60 @@ def cmd_collect(args: argparse.Namespace) -> int:
     if error_count and not args.allow_errors:
         return 1
     return 0
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    data_dir = ensure_data_dir(args.data_dir)
+    period = args.date or _default_period_date()
+    metadata = _load_metadata(args.metadata)
+    try:
+        raw = build_benchmark_record(
+            tool=args.tool,
+            layer=args.layer,
+            baseline_file=args.baseline_file,
+            optimized_file=args.optimized_file,
+            baseline_cmd=args.baseline_cmd,
+            optimized_cmd=args.optimized_cmd,
+            cwd=args.cwd,
+            timeout=args.timeout,
+            tokenizer=args.tokenizer,
+            encoding=args.encoding,
+            source_ref=args.source_ref,
+            model=args.model,
+            session_id=args.session_id,
+        )
+        prices = load_prices(args.prices, offline=args.offline_prices, cache_path=args.price_cache)
+        event = _finalize_ok_event(raw, period=period, prices=prices, cli_model=args.model, metadata=metadata)
+        events = [event]
+        return_code = 0
+    except BenchError as exc:
+        events = [_error_event(args.tool, period=period, error=str(exc), cli_model=args.model, metadata=metadata, layer=args.layer)]
+        return_code = 1
+
+    append_events(data_dir, events)
+    write_daily_summary(data_dir, period)
+    update_state(data_dir, date=period, events=events)
+
+    event = events[0]
+    if event.get("status") == "ok":
+        measurement = (event.get("raw") or {}).get("measurement") or {}
+        print(
+            json.dumps(
+                {
+                    "date": period,
+                    "tool": event.get("tool"),
+                    "baseline_tokens": measurement.get("baseline_tokens"),
+                    "optimized_tokens": measurement.get("optimized_tokens"),
+                    "saved_tokens": event.get("saved_tokens"),
+                    "saved_pct": measurement.get("saved_pct"),
+                    "token_count_mode": measurement.get("token_count_mode"),
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(json.dumps({"date": period, "tool": args.tool, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+    return return_code
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -243,7 +317,7 @@ def _finalize_ok_event(raw: dict[str, Any], *, period: str, prices: dict[str, An
     return event
 
 
-def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, metadata: dict[str, Any]) -> dict[str, Any]:
+def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, metadata: dict[str, Any], layer: str | None = None) -> dict[str, Any]:
     model = _resolve_model(cli_model=cli_model, metadata=metadata, raw={})
     return {
         "schema_version": SCHEMA_VERSION,
@@ -251,7 +325,7 @@ def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, m
         "ts": _now_iso(),
         "period": period,
         "tool": tool,
-        "layer": None,
+        "layer": layer,
         "model": model,
         "saved_tokens": 0,
         "saved_input_tokens": None,
