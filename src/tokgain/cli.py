@@ -117,11 +117,24 @@ def cmd_collect(args: argparse.Namespace) -> int:
     for tool in tools:
         adapter = ADAPTERS[tool]
         try:
-            raw_records = _filter_records_for_period(adapter.collect(), period)
-            for raw in raw_records:
+            raw_records = adapter.collect()
+            period_records = _filter_records_for_period(raw_records, period)
+            if not period_records:
+                events.append(
+                    _error_event(
+                        tool,
+                        period=period,
+                        error=f"no records for period {period} from {tool}",
+                        cli_model=args.model,
+                        metadata=metadata,
+                        layer=_adapter_layer(adapter),
+                    )
+                )
+                continue
+            for raw in period_records:
                 events.append(_finalize_ok_event(raw, period=period, prices=prices, cli_model=args.model, metadata=metadata))
         except AdapterError as exc:
-            events.append(_error_event(tool, period=period, error=str(exc), cli_model=args.model, metadata=metadata))
+            events.append(_error_event(tool, period=period, error=str(exc), cli_model=args.model, metadata=metadata, layer=_adapter_layer(adapter)))
 
     append_events(data_dir, events)
     write_daily_summary(data_dir, period)
@@ -277,6 +290,11 @@ def _filter_records_for_period(records: list[dict[str, Any]], period: str) -> li
     if has_perioded_records:
         return [raw for raw in records if raw.get("period") == period]
     return records
+
+
+def _adapter_layer(adapter: Any) -> str | None:
+    layer = getattr(adapter, "LAYER", None)
+    return str(layer) if layer else None
 
 
 def _finalize_ok_event(raw: dict[str, Any], *, period: str, prices: dict[str, Any], cli_model: str | None, metadata: dict[str, Any]) -> dict[str, Any]:

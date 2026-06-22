@@ -12,10 +12,17 @@
     <string>__HOME__/.local/state/tokgain</string>
     <string>collect</string>
     <string>--tool</string>
-    <string>auto</string>
+    <string>all</string>
     <string>--model</string>
     <string>__TOKGAIN_MODEL__</string>
+    <string>--allow-errors</string>
   </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
 
   <key>StartCalendarInterval</key>
   <dict>

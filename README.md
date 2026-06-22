@@ -23,7 +23,7 @@ export PATH="/Users/akitani/_dev/tokgain/.venv/bin:$PATH"
 ## Quick start
 
 ```bash
-tokgain collect --tool auto --model gpt-5.5
+tokgain collect --tool all --model gpt-5.5 --allow-errors
 tokgain bench --tool rg --layer search-output --model gpt-5.5 \
   --baseline-cmd 'rg "TODO|FIXME" .' \
   --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
@@ -41,7 +41,7 @@ jq . ~/.local/state/tokgain/daily/$(date -v-1d +%F).json
 ## Commands
 
 ```bash
-tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i|fff] [--date YYYY-MM-DD] [--model MODEL]
+tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i|fff] [--date YYYY-MM-DD] [--model MODEL] [--allow-errors]
 tokgain bench --tool TOOL (--baseline-file PATH|--baseline-cmd CMD) (--optimized-file PATH|--optimized-cmd CMD) [--layer LAYER] [--model MODEL]
 tokgain report --period day|week [--date YYYY-MM-DD] [--json]
 tokgain show [--tool TOOL] [--status ok|error] [--limit N]
@@ -147,7 +147,7 @@ tokgain bench --tool rg --layer search-output --model gpt-5.5 \
 
 `fff` の公式実体は `fff-mcp` MCP server です。ファイル検索を高速・省コンテキスト化しますが、現時点では native な savings ledger を出さないため、`tokgain` は存在しない `fff stats` のようなコマンドを推測実行しません。fff の節約量を集計したい場合は、外部ベンチ結果を `TOKGAIN_FFF_FILE` または `~/.fff/savings.jsonl` に1行1イベントで置きます。
 
-`collect --tool auto` は利用可能な source だけ読みます。明示指定した tool が失敗した場合は ERROR event を残して終了コード `1` です。
+`collect --tool auto` は利用可能な source だけ読みます。`collect --tool all --allow-errors` は全adapterを毎回走らせ、native ledger が無い/対象日レコードが無い tool も ERROR event として残しつつ終了コードは0にします。明示指定した tool が失敗し、`--allow-errors` を付けない場合は ERROR event を残して終了コード `1` です。
 
 ## launchd
 
@@ -158,7 +158,7 @@ cd /Users/akitani/_dev/tokgain
 scripts/install-launchd.sh
 ```
 
-毎日 0:00 に `tokgain collect --tool auto` を実行します。
+毎日 0:00 に `tokgain collect --tool all --allow-errors` を実行します。launchd の最小PATHには `~/.local/bin` や Homebrew が入らないため、テンプレート側で `~/.local/bin:/opt/homebrew/bin:/usr/local/bin` を明示します。
 
 ## Development
 

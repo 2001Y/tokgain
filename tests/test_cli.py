@@ -250,9 +250,49 @@ def test_explicit_missing_adapter_records_error_and_returns_nonzero(tmp_path):
     event = read_jsonl(data_dir / "events.jsonl")[0]
     assert event["status"] == "error"
     assert event["tool"] == "h5i"
+    assert event["layer"] == "audit"
     assert "h5i capture run" in event["error"].lower()
     daily = json.loads((data_dir / "daily" / "2026-06-21.json").read_text(encoding="utf-8"))
     assert daily["errors"][0]["tool"] == "h5i"
+
+
+def test_period_filter_that_removes_all_records_is_visible_error(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_executable(
+        bin_dir / "rtk",
+        """#!/usr/bin/env python3
+import json
+print(json.dumps({
+  "sessions": [
+    {"period": "2026-06-20", "saved_tokens": 123, "model": "gpt-test"}
+  ]
+}))
+""",
+    )
+    data_dir = tmp_path / "state"
+
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "collect",
+            "--tool",
+            "rtk",
+            "--date",
+            "2026-06-21",
+            "--model",
+            "gpt-test",
+        ],
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 1
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["status"] == "error"
+    assert event["tool"] == "rtk"
+    assert event["layer"] == "shell"
+    assert "no records for period 2026-06-21" in event["error"]
 
 
 def test_bench_file_pair_writes_measured_savings_event(tmp_path):
