@@ -29,6 +29,7 @@ tokgain bench --tool rg --layer search-output --model gpt-5.5 \
   --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
 tokgain measure h5i --cmd 'pytest -q' --model gpt-5.5
 tokgain measure fff --path . --query 'TODO' --max-results 20 --model gpt-5.5
+# Hermes hook / Codex MCP proxy からの自然利用計測も同じ events.jsonl に入る
 tokgain report --period day
 tokgain show --tool rtk --limit 20
 ```
@@ -47,6 +48,9 @@ tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i|fff] [--date YYYY-MM-
 tokgain bench --tool TOOL (--baseline-file PATH|--baseline-cmd CMD) (--optimized-file PATH|--optimized-cmd CMD) [--layer LAYER] [--model MODEL]
 tokgain measure h5i --cmd CMD [--h5i-format compact|json|summary] [--kind KIND] [--model MODEL]
 tokgain measure fff --path PATH --query QUERY [--fff-tool grep|find_files] [--baseline-cmd CMD] [--model MODEL]
+tokgain observe terminal --agent hermes --command CMD [--cwd DIR] [--model MODEL] < output.txt
+tokgain observe mcp-call --agent hermes --server-tool fff --base-path PATH [--model MODEL] < payload.json
+tokgain mcp-proxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
 tokgain report --period day|week [--date YYYY-MM-DD] [--json]
 tokgain show [--tool TOOL] [--status ok|error] [--limit N]
 tokgain export --format jsonl|json
@@ -172,6 +176,39 @@ tokgain bench --tool rg --layer search-output --model gpt-5.5 \
 `fff` の公式実体は `fff-mcp` MCP server です。ファイル検索を高速・省コンテキスト化しますが、現時点では native な savings ledger を出さないため、`tokgain` は存在しない `fff stats` のようなコマンドを推測実行しません。fff の節約量は `tokgain measure fff` でMCP結果を直接測るか、外部ベンチ結果を `TOKGAIN_FFF_FILE` / `~/.fff/savings.jsonl` に1行1イベントで置いて集計します。
 
 `collect --tool auto` は利用可能な source だけ読みます。`collect --tool all --allow-errors` は全adapterを毎回走らせ、native ledger が無い/対象日レコードが無い tool も ERROR event として残しつつ終了コードは0にします。明示指定した tool が失敗し、`--allow-errors` を付けない場合は ERROR event を残して終了コード `1` です。
+
+## Natural-use instrumentation
+
+普段の Codex / Hermes 利用中に自動で記録する場合も、正本は同じ `~/.local/state/tokgain/events.jsonl` です。
+
+### Hermes
+
+Hermes は plugin hook を使います。`~/.hermes/plugins/tokgain-observer/` の `post_tool_call` hook が fail-open で `tokgain observe ...` を呼びます。
+
+対象:
+
+- `terminal` tool 経由の `h5i ...`
+- `terminal` tool 経由の `ast-grep ...` / `sg ...`
+- `mcp_fff_*` など fff MCP tool 経由の検索
+
+有効化:
+
+```bash
+hermes plugins enable tokgain-observer
+hermes gateway restart   # gateway 利用時。CLI は新セッションで反映
+```
+
+### Codex
+
+Codex は fff MCP server を `tokgain mcp-proxy` 経由にします。
+
+```toml
+[mcp_servers.fff]
+command = "/Users/akitani/.local/bin/tokgain"
+args = ["mcp-proxy", "--agent", "codex", "--tool", "fff", "--base-path", "/Users/akitani/_dev", "--", "/opt/homebrew/bin/fff-mcp", "/Users/akitani/_dev"]
+```
+
+Codex / Hermes 以外へ展開しても `capture_mode` と `agent` で区別できます。イベントには raw output 本文ではなく、tokens / bytes / sha256 / redacted metadata を保存します。
 
 ## launchd
 
