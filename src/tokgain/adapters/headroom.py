@@ -30,8 +30,14 @@ def collect() -> list[dict]:
             raise AdapterError(f"headroom source contained no savings records: {source}")
         return records
     if shutil.which("headroom"):
-        payload = run_json_command(["headroom", "stats", "--json"])
-        records = extract_records(TOOL, LAYER, payload, "headroom stats --json")
-        if records:
-            return records
+        errors: list[str] = []
+        for command in (["headroom", "perf", "--format", "json"],):
+            try:
+                payload = run_json_command(list(command))
+                records = extract_records(TOOL, LAYER, payload, " ".join(command))
+                if records:
+                    return records
+            except AdapterError as exc:
+                errors.append(str(exc))
+        raise AdapterError("headroom commands returned no savings records: " + " | ".join(errors))
     raise AdapterError("no headroom savings source found (set TOKGAIN_HEADROOM_FILE or create ~/.headroom/proxy_savings.json)")

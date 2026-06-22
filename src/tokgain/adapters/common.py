@@ -36,6 +36,18 @@ SAVED_OUTPUT_KEYS = (
     "savedOutputTokens",
     "output_saved_tokens",
 )
+SAVED_CACHE_CREATE_KEYS = (
+    "saved_cache_creation_tokens",
+    "saved_cache_create_tokens",
+    "cache_creation_tokens_saved",
+    "cache_create_tokens_saved",
+    "savedCacheCreationTokens",
+)
+SAVED_CACHE_READ_KEYS = (
+    "saved_cache_read_tokens",
+    "cache_read_tokens_saved",
+    "savedCacheReadTokens",
+)
 MODEL_KEYS = ("model", "model_name", "modelName", "llm_model")
 SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
 PERIOD_KEYS = ("period", "date", "day")
@@ -88,6 +100,8 @@ def extract_records(tool: str, default_layer: str, payload: Any, source_ref: str
                 "saved_tokens": record.get("saved_tokens"),
                 "saved_input_tokens": record.get("saved_input_tokens"),
                 "saved_output_tokens": record.get("saved_output_tokens"),
+                "saved_cache_creation_tokens": record.get("saved_cache_creation_tokens"),
+                "saved_cache_read_tokens": record.get("saved_cache_read_tokens"),
                 "source_ref": record.get("source_ref"),
             },
             sort_keys=True,
@@ -121,10 +135,12 @@ def _walk_payload(tool: str, default_layer: str, payload: Any, source_ref: str) 
 def _normalize_record(tool: str, default_layer: str, raw: dict[str, Any], fallback_source_ref: str) -> dict[str, Any] | None:
     saved_input = _as_int(_get_any(raw, SAVED_INPUT_KEYS))
     saved_output = _as_int(_get_any(raw, SAVED_OUTPUT_KEYS))
+    saved_cache_create = _as_int(_get_any(raw, SAVED_CACHE_CREATE_KEYS))
+    saved_cache_read = _as_int(_get_any(raw, SAVED_CACHE_READ_KEYS))
     saved_total = _as_int(_get_any(raw, SAVED_TOTAL_KEYS))
 
-    if saved_total is None and (saved_input is not None or saved_output is not None):
-        saved_total = (saved_input or 0) + (saved_output or 0)
+    if saved_total is None and any(value is not None for value in (saved_input, saved_output, saved_cache_create, saved_cache_read)):
+        saved_total = (saved_input or 0) + (saved_output or 0) + (saved_cache_create or 0) + (saved_cache_read or 0)
     if saved_total is None:
         return None
 
@@ -136,6 +152,8 @@ def _normalize_record(tool: str, default_layer: str, raw: dict[str, Any], fallba
         "saved_tokens": saved_total,
         "saved_input_tokens": saved_input,
         "saved_output_tokens": saved_output,
+        "saved_cache_creation_tokens": saved_cache_create,
+        "saved_cache_read_tokens": saved_cache_read,
         "usd_saved_estimate": _as_float(_get_any(raw, USD_KEYS)),
         "source_ref": str(_get_any(raw, SOURCE_KEYS) or fallback_source_ref),
         "session_id": _get_any(raw, SESSION_KEYS),

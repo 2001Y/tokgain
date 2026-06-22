@@ -49,7 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Collect reported token savings from coding-agent compression tools into local JSONL.",
     )
     parser.add_argument("--data-dir", default=os.environ.get("TOKGAIN_DATA_DIR", str(DEFAULT_DATA_DIR)), help="state directory (default: ~/.local/state/tokgain)")
-    parser.add_argument("--prices", default=os.environ.get("TOKGAIN_PRICES"), help="prices.json path (default: packaged placeholder table)")
+    parser.add_argument("--prices", default=os.environ.get("TOKGAIN_PRICES"), help="manual prices.json path; when omitted, refresh LiteLLM + models.dev like ccusage")
+    parser.add_argument("--offline-prices", action="store_true", default=_env_truthy("TOKGAIN_PRICES_OFFLINE"), help="do not fetch live pricing; use --prices, cache, or packaged fallback")
+    parser.add_argument("--price-cache", default=os.environ.get("TOKGAIN_PRICE_CACHE"), help="price cache path (default: ~/.cache/tokgain/prices.json)")
 
     sub = parser.add_subparsers(dest="command")
 
@@ -79,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     prices = sub.add_parser("prices", help="inspect price table")
     prices_sub = prices.add_subparsers(dest="prices_command")
     prices_sub.add_parser("show", help="print active prices.json")
+    prices_sub.add_parser("refresh", help="fetch LiteLLM + models.dev pricing and update cache")
 
     return parser
 
@@ -86,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_collect(args: argparse.Namespace) -> int:
     data_dir = ensure_data_dir(args.data_dir)
     period = args.date or _default_period_date()
-    prices = load_prices(args.prices)
+    prices = load_prices(args.prices, offline=args.offline_prices, cache_path=args.price_cache)
     metadata = _load_metadata(args.metadata)
     tools = _resolve_tools(args.tool)
 
@@ -154,7 +157,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     payload = {
         "data_dir": str(Path(args.data_dir).expanduser()),
-        "prices": str(Path(args.prices).expanduser()) if args.prices else "packaged:tokgain/data/prices.json",
+        "prices": str(Path(args.prices).expanduser()) if args.prices else "live:LiteLLM+models.dev (cache fallback)",
         "adapters": {tool: {"available": adapter.available()} for tool, adapter in ADAPTERS.items()},
     }
     if args.json:
@@ -168,10 +171,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_prices(args: argparse.Namespace) -> int:
-    if args.prices_command != "show":
-        print("tokgain prices: expected subcommand 'show'", file=os.sys.stderr)
+    if args.prices_command == "show":
+        table = load_prices(args.prices, offline=args.offline_prices, cache_path=args.price_cache)
+    elif args.prices_command == "refresh":
+        table = load_prices(None, offline=False, cache_path=args.price_cache, refresh=True)
+    else:
+        print("tokgain prices: expected subcommand 'show' or 'refresh'", file=os.sys.stderr)
         return 2
-    print(json.dumps(load_prices(args.prices), ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(table, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
 
@@ -212,6 +219,8 @@ def _finalize_ok_event(raw: dict[str, Any], *, period: str, prices: dict[str, An
         "saved_tokens": int(raw.get("saved_tokens") or 0),
         "saved_input_tokens": raw.get("saved_input_tokens"),
         "saved_output_tokens": raw.get("saved_output_tokens"),
+        "saved_cache_creation_tokens": raw.get("saved_cache_creation_tokens"),
+        "saved_cache_read_tokens": raw.get("saved_cache_read_tokens"),
         "source_ref": raw.get("source_ref"),
         "session_id": raw.get("session_id") or metadata.get("session_id") or _env_first("CODEX_SESSION_ID", "CLAUDE_SESSION_ID", "HERMES_SESSION_ID"),
         "incomplete": incomplete,
@@ -247,6 +256,8 @@ def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, m
         "saved_tokens": 0,
         "saved_input_tokens": None,
         "saved_output_tokens": None,
+        "saved_cache_creation_tokens": None,
+        "saved_cache_read_tokens": None,
         "estimate_mode": "none",
         "usd_saved_estimate": 0.0,
         "price_table_version": None,
@@ -287,6 +298,10 @@ def _env_first(*keys: str) -> str | None:
         if value:
             return value
     return None
+
+
+def _env_truthy(key: str) -> bool:
+    return os.environ.get(key, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _default_period_date() -> str:

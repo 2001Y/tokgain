@@ -148,6 +148,59 @@ print(json.dumps({"saved_tokens": 1000, "saved_input_tokens": 1000, "model": "pa
     assert event["usd_saved_estimate"] == 0.001
 
 
+def test_collect_fff_from_env_file(tmp_path):
+    fff_file = tmp_path / "fff-savings.jsonl"
+    fff_file.write_text(
+        json.dumps({"model": "gpt-test", "saved_tokens": 321, "source_ref": "fff fixture"}) + "\n",
+        encoding="utf-8",
+    )
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "--prices",
+            str(prices),
+            "collect",
+            "--tool",
+            "fff",
+            "--date",
+            "2026-06-21",
+        ],
+        env={"TOKGAIN_FFF_FILE": fff_file},
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["tool"] == "fff"
+    assert event["layer"] == "file-search-mcp"
+    assert event["saved_tokens"] == 321
+
+
+def test_collect_fff_without_external_ledger_records_clear_error(tmp_path):
+    data_dir = tmp_path / "state"
+    result = run_cli([
+        "--data-dir",
+        str(data_dir),
+        "collect",
+        "--tool",
+        "fff",
+        "--date",
+        "2026-06-21",
+        "--model",
+        "gpt-test",
+    ], env={"TOKGAIN_FFF_FILE": tmp_path / "missing.jsonl"})
+
+    assert result.returncode == 1
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["status"] == "error"
+    assert event["tool"] == "fff"
+    assert "fff-mcp" in event["error"]
+    assert "savings ledger" in event["error"]
+
+
 def test_model_missing_event_is_incomplete_and_excluded_from_totals(tmp_path):
     headroom_file = tmp_path / "proxy_savings.json"
     headroom_file.write_text(json.dumps({"saved_tokens": 500, "saved_input_tokens": 500}), encoding="utf-8")
@@ -197,7 +250,7 @@ def test_explicit_missing_adapter_records_error_and_returns_nonzero(tmp_path):
     event = read_jsonl(data_dir / "events.jsonl")[0]
     assert event["status"] == "error"
     assert event["tool"] == "h5i"
-    assert "no h5i savings source" in event["error"].lower()
+    assert "h5i capture run" in event["error"].lower()
     daily = json.loads((data_dir / "daily" / "2026-06-21.json").read_text(encoding="utf-8"))
     assert daily["errors"][0]["tool"] == "h5i"
 

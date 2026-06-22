@@ -8,7 +8,7 @@
 - Project folder: `/Users/akitani/_dev/tokgain`
 - 正本: `~/.local/state/tokgain/events.jsonl` の単一JSONL
 - 派生物: `~/.local/state/tokgain/daily/YYYY-MM-DD.json`
-- API換算: `prices.json` による推定値。未知モデルは `price_missing=true` として `usd_saved_estimate=0.0` を残す。
+- API換算: ccusage と同様に LiteLLM `model_prices_and_context_window.json` を主に使い、`models.dev/api.json` で補完する。未知モデルは `price_missing=true` として `usd_saved_estimate=0.0` を残す。
 
 ## 目的
 
@@ -64,7 +64,9 @@
 
 ## 価格テーブル
 
-既定は package 内の `src/tokgain/data/prices.json`。本番運用では `--prices /path/to/prices.json` または `TOKGAIN_PRICES` を使う。
+既定は live 取得です。明示的に `--prices` / `TOKGAIN_PRICES` がある場合のみ手動JSONを使う。
+取得ロジックは ccusage に寄せ、LiteLLM を主ソース、models.dev を不足分の補完ソースにする。
+取得結果は `~/.cache/tokgain/prices.json` に保存し、`--offline-prices` では cache または package 内 `src/tokgain/data/prices.json` を使う。
 
 ```json
 {
@@ -90,7 +92,7 @@
 
 - 優先: `TOKGAIN_HEADROOM_FILE`
 - 次点: `~/.headroom/proxy_savings.json`
-- 次点: `headroom stats --json`
+- 次点: `headroom perf --format json`
 
 ### lean-ctx
 
@@ -102,9 +104,16 @@
 
 - 優先: `TOKGAIN_H5I_SUMMARY_FILE`
 - 次点: `~/.h5i/savings.jsonl`, `~/.h5i/savings.json`, `~/.h5i/summary.json`
-- 次点: `h5i stats --json`
 
-`h5i capture run` は任意コマンド実行が必要なので、collector は勝手に実行しない。
+`h5i capture run` は任意コマンド実行が必要なので、collector は勝手に実行しない。`h5i stats` のような global stats は無いので、capture/export由来のJSON/JSONLだけを読む。
+
+### fff
+
+- 公式実体: `fff-mcp` MCP server。公式推奨インストールは `brew install dmtrKovalenko/fff/fff-mcp` または公式 install script。
+- 優先: `TOKGAIN_FFF_FILE`
+- 次点: `~/.fff/savings.jsonl`, `~/.fff/savings.json`, `~/.fff/stats.json`
+- `fff-mcp` はファイル検索を高速・省コンテキスト化するが、現時点では native な savings ledger を出さない。
+- そのため collector は存在しない `fff stats` / `fff savings` を推測実行しない。fff の節約量は外部ベンチ/エクスポートが作ったJSON/JSONLだけを正本として読む。
 
 ## CLI
 
@@ -116,6 +125,7 @@ tokgain show --tool rtk
 tokgain export --format jsonl
 tokgain doctor
 tokgain prices show
+tokgain prices refresh
 ```
 
 ## エラー方針

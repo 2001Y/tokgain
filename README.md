@@ -1,6 +1,6 @@
 # tokgain
 
-`tokgain` は、RTK / headroom / lean-ctx / h5i などの token 節約量を、ローカルの JSONL に追記して後から集計する小さなCLIです。
+`tokgain` は、RTK / headroom / lean-ctx / h5i / fff などの token 節約量を、ローカルの JSONL に追記して後から集計する小さなCLIです。
 
 名前は `token` + `gain`。Codex専用名にせず、Claude Code などにも展開しやすい短い名前にしました。
 
@@ -37,12 +37,13 @@ jq . ~/.local/state/tokgain/daily/$(date -v-1d +%F).json
 ## Commands
 
 ```bash
-tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i] [--date YYYY-MM-DD] [--model MODEL]
+tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i|fff] [--date YYYY-MM-DD] [--model MODEL]
 tokgain report --period day|week [--date YYYY-MM-DD] [--json]
 tokgain show [--tool rtk] [--status ok|error] [--limit N]
 tokgain export --format jsonl|json
 tokgain doctor [--json]
 tokgain prices show
+tokgain prices refresh
 ```
 
 ## Data layout
@@ -72,7 +73,21 @@ tokgain prices show
 
 ## 価格表
 
-デフォルトの価格表は placeholder です。実運用では手で更新した JSON を渡してください。
+価格表は ccusage と同じ考え方で取得します。
+
+1. `--prices` / `TOKGAIN_PRICES` があれば、その手動JSONを使う。
+2. 指定がなければ LiteLLM の `model_prices_and_context_window.json` を取得する。
+3. LiteLLM に無いモデルは `models.dev/api.json` で補う。
+4. 取得成功時は `~/.cache/tokgain/prices.json` に保存する。
+5. `--offline-prices` 時やネットワーク失敗時は cache、最後に packaged placeholder を使う。
+
+明示的に更新する場合:
+
+```bash
+tokgain prices refresh
+```
+
+手動JSONを固定したい場合:
 
 ```bash
 tokgain --prices ~/.config/tokgain/prices.json collect --tool auto --model gpt-5.5
@@ -100,9 +115,12 @@ tokgain --prices ~/.config/tokgain/prices.json collect --tool auto --model gpt-5
 | tool | source |
 |---|---|
 | rtk | `rtk gain --all --format json` |
-| headroom | `TOKGAIN_HEADROOM_FILE`, `~/.headroom/proxy_savings.json`, `headroom stats --json` |
+| headroom | `TOKGAIN_HEADROOM_FILE`, `~/.headroom/proxy_savings.json`, `headroom perf --format json` |
 | lean-ctx | `TOKGAIN_LEAN_CTX_FILE`, `~/.lean-ctx/savings.jsonl`, `lean-ctx gain --json` |
-| h5i | `TOKGAIN_H5I_SUMMARY_FILE`, `~/.h5i/savings.jsonl`, `h5i stats --json` |
+| h5i | `TOKGAIN_H5I_SUMMARY_FILE`, `~/.h5i/savings.jsonl` など `h5i capture run --format json` 由来の外部JSONL |
+| fff | `TOKGAIN_FFF_FILE`, `~/.fff/savings.jsonl` などの外部ベンチ/エクスポートJSONL |
+
+`fff` の公式実体は `fff-mcp` MCP server です。ファイル検索を高速・省コンテキスト化しますが、現時点では native な savings ledger を出さないため、`tokgain` は存在しない `fff stats` のようなコマンドを推測実行しません。fff の節約量を集計したい場合は、外部ベンチ結果を `TOKGAIN_FFF_FILE` または `~/.fff/savings.jsonl` に1行1イベントで置きます。
 
 `collect --tool auto` は利用可能な source だけ読みます。明示指定した tool が失敗した場合は ERROR event を残して終了コード `1` です。
 

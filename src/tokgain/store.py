@@ -132,6 +132,8 @@ def _empty_bucket() -> dict[str, Any]:
         "reported_saved_tokens": 0,
         "reported_saved_input_tokens": 0,
         "reported_saved_output_tokens": 0,
+        "reported_saved_cache_creation_tokens": 0,
+        "reported_saved_cache_read_tokens": 0,
         "reported_saved_usd": 0.0,
     }
 
@@ -141,6 +143,8 @@ def _add_to_bucket(bucket: dict[str, Any], event: dict[str, Any]) -> None:
     bucket["reported_saved_tokens"] += int(event.get("saved_tokens") or 0)
     bucket["reported_saved_input_tokens"] += int(event.get("saved_input_tokens") or 0)
     bucket["reported_saved_output_tokens"] += int(event.get("saved_output_tokens") or 0)
+    bucket["reported_saved_cache_creation_tokens"] += int(event.get("saved_cache_creation_tokens") or 0)
+    bucket["reported_saved_cache_read_tokens"] += int(event.get("saved_cache_read_tokens") or 0)
     bucket["reported_saved_usd"] += float(event.get("usd_saved_estimate") or 0.0)
 
 

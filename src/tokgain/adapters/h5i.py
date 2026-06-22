@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-from .common import AdapterError, extract_records, read_json_or_jsonl, run_json_command
+from .common import AdapterError, extract_records, read_json_or_jsonl
 
 TOOL = "h5i"
 LAYER = "audit"
@@ -20,27 +19,28 @@ def _env_file() -> Path | None:
     return Path(value).expanduser() if value else None
 
 
+def _candidate_files() -> list[Path]:
+    paths = [_env_file()] if _env_file() else []
+    paths.extend(DEFAULT_FILES)
+    return [path for path in paths if path is not None]
+
+
 def available() -> bool:
-    if (_env_file() and _env_file().exists()) or any(path.exists() for path in DEFAULT_FILES):
-        return True
-    return shutil.which("h5i") is not None
+    # h5i's official token-reduction path is `h5i capture run -- <cmd>`.
+    # Running that requires a command and must not be guessed by a collector.
+    # Auto-collection is therefore file-backed only.
+    return any(path.exists() for path in _candidate_files())
 
 
 def collect() -> list[dict]:
-    candidates = [_env_file()] if _env_file() else []
-    candidates.extend(DEFAULT_FILES)
-    for path in candidates:
-        if path and path.exists():
+    for path in _candidate_files():
+        if path.exists():
             payload = read_json_or_jsonl(path)
             records = extract_records(TOOL, LAYER, payload, str(path))
             if records:
                 return records
-    if shutil.which("h5i"):
-        try:
-            payload = run_json_command(["h5i", "stats", "--json"])
-            records = extract_records(TOOL, LAYER, payload, "h5i stats --json")
-            if records:
-                return records
-        except AdapterError as exc:
-            raise AdapterError(f"no h5i savings source found; h5i stats failed: {exc}") from exc
-    raise AdapterError("no h5i savings source found (set TOKGAIN_H5I_SUMMARY_FILE or create ~/.h5i/savings.jsonl)")
+            raise AdapterError(f"h5i savings source contained no savings records: {path}")
+    raise AdapterError(
+        "no h5i savings source found; h5i exposes savings per `h5i capture run -- <command>` rather than a global stats command "
+        "(set TOKGAIN_H5I_SUMMARY_FILE or create ~/.h5i/savings.jsonl from capture/export output)"
+    )
