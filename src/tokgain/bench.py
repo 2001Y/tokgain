@@ -53,6 +53,31 @@ def build_benchmark_record(
         cwd=cwd,
         timeout=timeout,
     )
+    return build_benchmark_record_from_sources(
+        tool=tool,
+        layer=layer,
+        baseline=baseline,
+        optimized=optimized,
+        tokenizer=tokenizer,
+        encoding=encoding,
+        source_ref=source_ref,
+        model=model,
+        session_id=session_id,
+    )
+
+
+def build_benchmark_record_from_sources(
+    *,
+    tool: str,
+    layer: str,
+    baseline: SourceResult,
+    optimized: SourceResult,
+    tokenizer: str = "auto",
+    encoding: str = "o200k_base",
+    source_ref: str | None = None,
+    model: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     baseline_tokens, mode = count_tokens(baseline.text, tokenizer=tokenizer, encoding=encoding)
     optimized_tokens, optimized_mode = count_tokens(optimized.text, tokenizer=tokenizer, encoding=encoding)
     if optimized_mode != mode:
@@ -99,6 +124,10 @@ def count_tokens(text: str, *, tokenizer: str = "auto", encoding: str = "o200k_b
             enc = tiktoken.get_encoding(encoding)
             return len(enc.encode(text)), f"tiktoken:{encoding}"
     return len(_TOKEN_RE.findall(text)), "regex_v1"
+
+
+def read_command_source(command: str, *, cwd: str | None = None, timeout: int = 30, label: str = "command") -> SourceResult:
+    return _read_source(label=label, file_path=None, command=command, cwd=cwd, timeout=timeout)
 
 
 def _read_source(

@@ -27,6 +27,8 @@ tokgain collect --tool all --model gpt-5.5 --allow-errors
 tokgain bench --tool rg --layer search-output --model gpt-5.5 \
   --baseline-cmd 'rg "TODO|FIXME" .' \
   --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
+tokgain measure h5i --cmd 'pytest -q' --model gpt-5.5
+tokgain measure fff --path . --query 'TODO' --max-results 20 --model gpt-5.5
 tokgain report --period day
 tokgain show --tool rtk --limit 20
 ```
@@ -43,6 +45,8 @@ jq . ~/.local/state/tokgain/daily/$(date -v-1d +%F).json
 ```bash
 tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i|fff] [--date YYYY-MM-DD] [--model MODEL] [--allow-errors]
 tokgain bench --tool TOOL (--baseline-file PATH|--baseline-cmd CMD) (--optimized-file PATH|--optimized-cmd CMD) [--layer LAYER] [--model MODEL]
+tokgain measure h5i --cmd CMD [--h5i-format compact|json|summary] [--kind KIND] [--model MODEL]
+tokgain measure fff --path PATH --query QUERY [--fff-tool grep|find_files] [--baseline-cmd CMD] [--model MODEL]
 tokgain report --period day|week [--date YYYY-MM-DD] [--json]
 tokgain show [--tool TOOL] [--status ok|error] [--limit N]
 tokgain export --format jsonl|json
@@ -125,6 +129,26 @@ tokgain --prices ~/.config/tokgain/prices.json collect --tool auto --model gpt-5
 | h5i | `TOKGAIN_H5I_SUMMARY_FILE`, `~/.h5i/savings.jsonl` など `h5i capture run --format json` 由来の外部JSONL |
 | fff | `TOKGAIN_FFF_FILE`, `~/.fff/savings.jsonl` などの外部ベンチ/エクスポートJSONL |
 
+## Built-in measurement for h5i / fff
+
+`h5i` と `fff-mcp` は日次の native ledger を持たないため、`collect` だけでは節約量を作れません。代わりに `tokgain measure` がツール側で baseline と optimized を実行/取得して、同じ `events.jsonl` に保存します。
+
+```bash
+# raw command と h5i capture run の出力を比較する。コマンドは2回走る。
+tokgain measure h5i --cmd 'pytest -q' --kind test --model gpt-5.5
+
+# rg の生出力と fff-mcp grep のMCP結果を比較する。
+tokgain measure fff --path . --query 'PrepareUpload' --max-results 20 --model gpt-5.5
+
+# fff の baseline を自分で固定したい場合
+tokgain measure fff --path . --query 'PrepareUpload' \
+  --baseline-cmd 'rg --line-number --column --no-heading --color never PrepareUpload src | head -20'
+```
+
+- `measure h5i` は指定コマンドを raw と `h5i capture run` で2回実行します。h5iの性質上、実行ディレクトリはgit repo内にしてください。副作用のあるコマンドには使わず、test/build/search/log確認など再実行可能なものに限定してください。
+- `measure fff` は内部で `fff-mcp` にMCP接続し、`grep` または `find_files` を呼びます。比較対象の raw baseline は既定で `rg` / `find` ですが、厳密に揃えたい場合は `--baseline-cmd` を渡してください。
+- `saved_tokens` は負数も許容します。小さい出力やmetadata過多では、h5i/fff側が増えることもあります。
+
 ## Benchmark mode
 
 `rg`, `ast-grep`, `fff-mcp`, `tokensaver`, `contextmode`, `codereviewgraph`, Claude Code / Codex の独自context圧縮など、native ledger が無いものは `tokgain bench` で測ります。正本は同じ `events.jsonl` です。
@@ -145,7 +169,7 @@ tokgain bench --tool rg --layer search-output --model gpt-5.5 \
 - `saved_input_tokens` に同じ値を入れ、API換算は `prompt_equivalent` として扱います。
 - 既定 tokenizer は `auto`。`tiktoken` があれば `o200k_base`、無ければ依存なしの `regex_v1` 概算です。再現性重視なら `--tokenizer regex` を明示します。
 
-`fff` の公式実体は `fff-mcp` MCP server です。ファイル検索を高速・省コンテキスト化しますが、現時点では native な savings ledger を出さないため、`tokgain` は存在しない `fff stats` のようなコマンドを推測実行しません。fff の節約量を集計したい場合は、外部ベンチ結果を `TOKGAIN_FFF_FILE` または `~/.fff/savings.jsonl` に1行1イベントで置きます。
+`fff` の公式実体は `fff-mcp` MCP server です。ファイル検索を高速・省コンテキスト化しますが、現時点では native な savings ledger を出さないため、`tokgain` は存在しない `fff stats` のようなコマンドを推測実行しません。fff の節約量は `tokgain measure fff` でMCP結果を直接測るか、外部ベンチ結果を `TOKGAIN_FFF_FILE` / `~/.fff/savings.jsonl` に1行1イベントで置いて集計します。
 
 `collect --tool auto` は利用可能な source だけ読みます。`collect --tool all --allow-errors` は全adapterを毎回走らせ、native ledger が無い/対象日レコードが無い tool も ERROR event として残しつつ終了コードは0にします。明示指定した tool が失敗し、`--allow-errors` を付けない場合は ERROR event を残して終了コード `1` です。
 

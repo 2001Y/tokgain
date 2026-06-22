@@ -10,6 +10,7 @@ from typing import Any
 from .adapters import ADAPTERS
 from .adapters.common import AdapterError
 from .bench import BenchError, build_benchmark_record
+from .measure import MeasureError, build_fff_measure_record, build_h5i_measure_record
 from .pricing import estimate_usd, load_prices
 from .store import SCHEMA_VERSION, append_events, build_daily_summary, build_week_summary, ensure_data_dir, read_events, update_state, write_daily_summary
 
@@ -28,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_collect(args)
         if args.command == "bench":
             return cmd_bench(args)
+        if args.command == "measure":
+            return cmd_measure(args)
         if args.command == "report":
             return cmd_report(args)
         if args.command == "show":
@@ -81,6 +84,44 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--timeout", type=int, default=30, help="command timeout seconds")
     bench.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
     bench.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+
+    measure = sub.add_parser("measure", help="measure h5i/fff savings with built-in tool-specific runners")
+    measure_sub = measure.add_subparsers(dest="measure_tool")
+
+    h5i = measure_sub.add_parser("h5i", help="run a command raw and through h5i capture, then compare token counts")
+    h5i.add_argument("--cmd", required=True, help="command to run twice: raw baseline and h5i-captured optimized output")
+    h5i.add_argument("--date", default=None, help="period date YYYY-MM-DD; default yesterday")
+    h5i.add_argument("--model", default=None, help="explicit model override for the measurement event")
+    h5i.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    h5i.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    h5i.add_argument("--source-ref", default=None, help="human-readable measurement source reference")
+    h5i.add_argument("--cwd", default=None, help="working directory for both command runs")
+    h5i.add_argument("--timeout", type=int, default=30, help="command timeout seconds")
+    h5i.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
+    h5i.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+    h5i.add_argument("--h5i-format", default="compact", choices=["compact", "structured", "yaml", "json", "summary", "text"], help="h5i capture run output format")
+    h5i.add_argument("--kind", default=None, help="h5i content kind, e.g. test|log|json|diff|generic")
+    h5i.add_argument("--budget", type=int, default=None, help="h5i max lines to keep in summary")
+    h5i.add_argument("--token-budget", type=int, default=None, help="h5i best-effort summary token cap")
+    h5i.add_argument("--min-bytes", type=int, default=0, help="h5i min bytes before capture; default 0 to force measurement")
+    h5i.add_argument("--quiet", action="store_true", help="pass --quiet to h5i capture run")
+
+    fff = measure_sub.add_parser("fff", help="call fff-mcp and compare its result against a raw baseline command")
+    fff.add_argument("--query", required=True, help="query passed to fff-mcp")
+    fff.add_argument("--path", default=".", help="base directory to index/search with fff-mcp")
+    fff.add_argument("--fff-tool", choices=["grep", "find_files"], default="grep", help="fff MCP tool to call")
+    fff.add_argument("--max-results", type=int, default=20, help="max results for fff and default baseline")
+    fff.add_argument("--baseline-cmd", default=None, help="override raw baseline command; default uses rg/find")
+    fff.add_argument("--output-mode", default=None, help="optional fff grep output_mode")
+    fff.add_argument("--startup-wait", type=float, default=1.0, help="seconds to wait after fff-mcp initialization for indexing")
+    fff.add_argument("--date", default=None, help="period date YYYY-MM-DD; default yesterday")
+    fff.add_argument("--model", default=None, help="explicit model override for the measurement event")
+    fff.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    fff.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    fff.add_argument("--source-ref", default=None, help="human-readable measurement source reference")
+    fff.add_argument("--timeout", type=int, default=30, help="command/MCP timeout seconds")
+    fff.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
+    fff.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
 
     report = sub.add_parser("report", help="print day/week summary")
     report.add_argument("--period", choices=["day", "week"], default="day")
@@ -199,6 +240,82 @@ def cmd_bench(args: argparse.Namespace) -> int:
         )
     else:
         print(json.dumps({"date": period, "tool": args.tool, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+    return return_code
+
+
+def cmd_measure(args: argparse.Namespace) -> int:
+    if not getattr(args, "measure_tool", None):
+        print("tokgain measure: expected subcommand 'h5i' or 'fff'", file=os.sys.stderr)
+        return 2
+    data_dir = ensure_data_dir(args.data_dir)
+    period = args.date or _default_period_date()
+    metadata = _load_metadata(args.metadata)
+    layer = "audit" if args.measure_tool == "h5i" else "file-search-mcp"
+    try:
+        if args.measure_tool == "h5i":
+            raw = build_h5i_measure_record(
+                command=args.cmd,
+                cwd=args.cwd,
+                timeout=args.timeout,
+                tokenizer=args.tokenizer,
+                encoding=args.encoding,
+                model=args.model,
+                session_id=args.session_id,
+                h5i_format=args.h5i_format,
+                kind=args.kind,
+                budget=args.budget,
+                token_budget=args.token_budget,
+                min_bytes=args.min_bytes,
+                quiet=args.quiet,
+                source_ref=args.source_ref,
+            )
+        else:
+            raw = build_fff_measure_record(
+                query=args.query,
+                path=args.path,
+                fff_tool=args.fff_tool,
+                max_results=args.max_results,
+                baseline_cmd=args.baseline_cmd,
+                output_mode=args.output_mode,
+                timeout=args.timeout,
+                startup_wait=args.startup_wait,
+                tokenizer=args.tokenizer,
+                encoding=args.encoding,
+                model=args.model,
+                session_id=args.session_id,
+                source_ref=args.source_ref,
+            )
+        prices = load_prices(args.prices, offline=args.offline_prices, cache_path=args.price_cache)
+        event = _finalize_ok_event(raw, period=period, prices=prices, cli_model=args.model, metadata=metadata)
+        events = [event]
+        return_code = 0
+    except (BenchError, MeasureError) as exc:
+        events = [_error_event(args.measure_tool, period=period, error=str(exc), cli_model=args.model, metadata=metadata, layer=layer)]
+        return_code = 1
+
+    append_events(data_dir, events)
+    write_daily_summary(data_dir, period)
+    update_state(data_dir, date=period, events=events)
+
+    event = events[0]
+    if event.get("status") == "ok":
+        measurement = (event.get("raw") or {}).get("measurement") or {}
+        print(
+            json.dumps(
+                {
+                    "date": period,
+                    "tool": event.get("tool"),
+                    "baseline_tokens": measurement.get("baseline_tokens"),
+                    "optimized_tokens": measurement.get("optimized_tokens"),
+                    "saved_tokens": event.get("saved_tokens"),
+                    "saved_pct": measurement.get("saved_pct"),
+                    "token_count_mode": measurement.get("token_count_mode"),
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(json.dumps({"date": period, "tool": args.measure_tool, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
     return return_code
 
 

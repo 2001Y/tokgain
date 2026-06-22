@@ -345,6 +345,120 @@ def test_bench_file_pair_writes_measured_savings_event(tmp_path):
     assert daily["by_tool"]["rg"]["reported_saved_tokens"] == 2
 
 
+def test_measure_h5i_runs_raw_and_h5i_capture_then_records_savings(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_executable(
+        bin_dir / "h5i",
+        """#!/usr/bin/env python3
+import sys
+assert sys.argv[1:4] == ['capture', 'run', '--format']
+print('short summary')
+""",
+    )
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "--prices",
+            str(prices),
+            "measure",
+            "h5i",
+            "--cmd",
+            "printf 'alpha beta gamma delta'",
+            "--date",
+            "2026-06-21",
+            "--model",
+            "gpt-test",
+            "--tokenizer",
+            "regex",
+        ],
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    summary = json.loads(result.stdout)
+    assert summary["tool"] == "h5i"
+    assert summary["baseline_tokens"] == 4
+    assert summary["optimized_tokens"] == 2
+    assert summary["saved_tokens"] == 2
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["status"] == "ok"
+    assert event["tool"] == "h5i"
+    assert event["layer"] == "audit"
+    assert event["saved_tokens"] == 2
+    assert "h5i capture run" in event["source_ref"]
+
+
+def test_measure_fff_calls_mcp_and_compares_rg_baseline(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_executable(
+        bin_dir / "fff-mcp",
+        """#!/usr/bin/env python3
+import json
+import sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get('method') == 'initialize':
+        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'fff', 'version': 'test'}}}), flush=True)
+    elif msg.get('method') == 'tools/call':
+        args = msg['params']['arguments']
+        assert msg['params']['name'] == 'grep'
+        assert args['query'] == 'needle'
+        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'content': [{'type': 'text', 'text': 'src/a.py:1:needle'}], 'isError': False}}), flush=True)
+""",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("needle one\nneedle two\nneedle three\n", encoding="utf-8")
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "--prices",
+            str(prices),
+            "measure",
+            "fff",
+            "--path",
+            str(repo),
+            "--query",
+            "needle",
+            "--max-results",
+            "3",
+            "--startup-wait",
+            "0",
+            "--date",
+            "2026-06-21",
+            "--model",
+            "gpt-test",
+            "--tokenizer",
+            "regex",
+        ],
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    summary = json.loads(result.stdout)
+    assert summary["tool"] == "fff"
+    assert summary["saved_tokens"] > 0
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["status"] == "ok"
+    assert event["tool"] == "fff"
+    assert event["layer"] == "file-search-mcp"
+    measurement = event["raw"]["measurement"]
+    assert measurement["baseline_kind"] == "command"
+    assert measurement["optimized_kind"] == "mcp"
+    assert measurement["optimized_ref"] == "fff-mcp:grep"
+
+
+
 def test_bench_command_failure_records_error_event(tmp_path):
     data_dir = tmp_path / "state"
     result = run_cli(
