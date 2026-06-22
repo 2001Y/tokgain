@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
-def run_cli(args, *, env=None):
+def run_cli(args, *, env=None, input_text=None):
     merged_env = os.environ.copy()
     merged_env["PYTHONPATH"] = str(SRC)
     if env:
@@ -19,6 +19,7 @@ def run_cli(args, *, env=None):
         cwd=ROOT,
         env=merged_env,
         text=True,
+        input=input_text,
         capture_output=True,
     )
 
@@ -596,3 +597,182 @@ def test_report_show_export_and_prices_commands(tmp_path):
     prices_result = run_cli(["--prices", str(prices), "prices", "show"])
     assert prices_result.returncode == 0
     assert json.loads(prices_result.stdout)["version"] == "test-prices"
+
+
+def test_observe_h5i_terminal_hook_parses_reduction_from_stdin(tmp_path):
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+    h5i_output = """{
+  "schema_version": 1,
+  "tool": "pytest",
+  "kind": "test",
+  "status": "ok",
+  "body": "1 passed"
+}
+
+▢ h5i object abc123 · tool-output · 141 bytes · 50 lines · ~90% fewer tokens (100→10)
+"""
+
+    result = run_cli(
+        [
+            "--data-dir", str(data_dir),
+            "--prices", str(prices),
+            "observe", "terminal",
+            "--agent", "hermes",
+            "--command", "h5i capture run --format json -- pytest -q",
+            "--exit-code", "0",
+            "--date", "2026-06-21",
+            "--model", "gpt-test",
+            "--session-id", "hermes-session",
+        ],
+        input_text=h5i_output,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["tool"] == "h5i"
+    assert event["layer"] == "audit"
+    assert event["saved_tokens"] == 90
+    assert event["session_id"] == "hermes-session"
+    measurement = event["raw"]["measurement"]
+    assert measurement["capture_mode"] == "hermes_hook"
+    assert measurement["baseline_tokens"] == 100
+    assert measurement["optimized_tokens"] == 10
+    assert measurement["agent"] == "hermes"
+
+
+def test_observe_ast_grep_terminal_hook_compares_rg_baseline(tmp_path):
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+    work = tmp_path / "repo"
+    work.mkdir()
+    (work / "a.py").write_text("needle\n" * 20, encoding="utf-8")
+
+    result = run_cli(
+        [
+            "--data-dir", str(data_dir),
+            "--prices", str(prices),
+            "observe", "terminal",
+            "--agent", "hermes",
+            "--command", "ast-grep run --pattern needle --lang python .",
+            "--cwd", str(work),
+            "--exit-code", "0",
+            "--date", "2026-06-21",
+            "--model", "gpt-test",
+        ],
+        input_text="a.py:1:needle\n",
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["tool"] == "ast-grep"
+    assert event["layer"] == "ast-search"
+    measurement = event["raw"]["measurement"]
+    assert measurement["capture_mode"] == "hermes_hook"
+    assert measurement["baseline_strategy"] == "rg_fixed_string_from_ast_grep_pattern"
+    assert measurement["baseline_tokens"] > measurement["optimized_tokens"]
+    assert event["saved_tokens"] == measurement["baseline_tokens"] - measurement["optimized_tokens"]
+
+
+def test_mcp_proxy_passes_through_fff_and_records_event(tmp_path):
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+    work = tmp_path / "repo"
+    work.mkdir()
+    (work / "a.txt").write_text("needle\n" * 30, encoding="utf-8")
+    fake_server = write_executable(
+        tmp_path / "fake_fff_server.py",
+        """#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    if "id" not in msg:
+        continue
+    if msg.get("method") == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": {}}}), flush=True)
+    elif msg.get("method") == "tools/call":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [{"type": "text", "text": "a.txt:1:needle\\n"}]}}), flush=True)
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {}}), flush=True)
+""",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(SRC)
+    input_text = "\n".join(
+        [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "grep", "arguments": {"query": "needle", "maxResults": 20}}}),
+        ]
+    ) + "\n"
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "tokgain.cli",
+            "--data-dir", str(data_dir),
+            "--prices", str(prices),
+            "mcp-proxy",
+            "--agent", "codex",
+            "--tool", "fff",
+            "--base-path", str(work),
+            "--date", "2026-06-21",
+            "--model", "gpt-test",
+            "--", str(fake_server),
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        input=input_text,
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    responses = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    assert responses[0]["id"] == 1
+    assert responses[1]["id"] == 2
+
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["tool"] == "fff"
+    assert event["layer"] == "file-search-mcp"
+    measurement = event["raw"]["measurement"]
+    assert measurement["capture_mode"] == "mcp_proxy"
+    assert measurement["agent"] == "codex"
+    assert measurement["baseline_tokens"] > measurement["optimized_tokens"]
+
+
+def test_observe_mcp_call_records_fff_without_proxy(tmp_path):
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+    work = tmp_path / "repo"
+    work.mkdir()
+    (work / "a.txt").write_text("needle\n" * 25, encoding="utf-8")
+    payload = {
+        "tool_name": "mcp_fff_grep",
+        "arguments": {"query": "needle", "maxResults": 20},
+        "result_text": "a.txt:1:needle\n",
+    }
+
+    result = run_cli(
+        [
+            "--data-dir", str(data_dir),
+            "--prices", str(prices),
+            "observe", "mcp-call",
+            "--agent", "hermes",
+            "--server-tool", "fff",
+            "--base-path", str(work),
+            "--date", "2026-06-21",
+            "--model", "gpt-test",
+            "--session-id", "hermes-session",
+        ],
+        input_text=json.dumps(payload),
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    assert event["tool"] == "fff"
+    assert event["session_id"] == "hermes-session"
+    measurement = event["raw"]["measurement"]
+    assert measurement["capture_mode"] == "hermes_hook"
+    assert measurement["agent"] == "hermes"
+    assert measurement["baseline_tokens"] > measurement["optimized_tokens"]

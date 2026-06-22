@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from .adapters import ADAPTERS
 from .adapters.common import AdapterError
 from .bench import BenchError, build_benchmark_record
 from .measure import MeasureError, build_fff_measure_record, build_h5i_measure_record
+from .mcp_proxy import ProxyError, run_mcp_proxy
+from .observe import ObserveError, build_mcp_observation_record, build_terminal_observation_record
 from .pricing import estimate_usd, load_prices
 from .store import SCHEMA_VERSION, append_events, build_daily_summary, build_week_summary, ensure_data_dir, read_events, update_state, write_daily_summary
 
@@ -31,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_bench(args)
         if args.command == "measure":
             return cmd_measure(args)
+        if args.command == "observe":
+            return cmd_observe(args)
+        if args.command == "mcp-proxy":
+            return cmd_mcp_proxy(args)
         if args.command == "report":
             return cmd_report(args)
         if args.command == "show":
@@ -122,6 +129,42 @@ def build_parser() -> argparse.ArgumentParser:
     fff.add_argument("--timeout", type=int, default=30, help="command/MCP timeout seconds")
     fff.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
     fff.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+
+    observe = sub.add_parser("observe", help="record savings from natural agent tool invocations")
+    observe_sub = observe.add_subparsers(dest="observe_source")
+    observe_terminal = observe_sub.add_parser("terminal", help="observe a terminal command result from stdin")
+    observe_terminal.add_argument("--agent", required=True, help="agent/runtime name, e.g. hermes")
+    observe_terminal.add_argument("--command", dest="observed_command", required=True, help="command that produced stdin output")
+    observe_terminal.add_argument("--exit-code", type=int, default=None)
+    observe_terminal.add_argument("--cwd", default=None, help="working directory of the observed command")
+    observe_terminal.add_argument("--date", default=None, help="period date YYYY-MM-DD; default today for live observations")
+    observe_terminal.add_argument("--model", default=None, help="explicit model override")
+    observe_terminal.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    observe_terminal.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    observe_terminal.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
+    observe_terminal.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+    observe_mcp = observe_sub.add_parser("mcp-call", help="observe an MCP tool result from stdin JSON")
+    observe_mcp.add_argument("--agent", required=True, help="agent/runtime name, e.g. hermes")
+    observe_mcp.add_argument("--server-tool", required=True, help="logical MCP server/tool family, e.g. fff")
+    observe_mcp.add_argument("--base-path", default=None, help="base path used to build baselines")
+    observe_mcp.add_argument("--date", default=None, help="period date YYYY-MM-DD; default today for live observations")
+    observe_mcp.add_argument("--model", default=None, help="explicit model override")
+    observe_mcp.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    observe_mcp.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    observe_mcp.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
+    observe_mcp.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+
+    mcp_proxy = sub.add_parser("mcp-proxy", help="transparent MCP stdio proxy that records tool savings")
+    mcp_proxy.add_argument("--agent", required=True, help="agent/runtime name, e.g. codex")
+    mcp_proxy.add_argument("--tool", required=True, help="logical tool/server being proxied, e.g. fff")
+    mcp_proxy.add_argument("--base-path", default=None, help="base path used to build baselines for file-search MCPs")
+    mcp_proxy.add_argument("--date", default=None, help="period date YYYY-MM-DD; default today for live observations")
+    mcp_proxy.add_argument("--model", default=None, help="explicit model override")
+    mcp_proxy.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    mcp_proxy.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    mcp_proxy.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
+    mcp_proxy.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+    mcp_proxy.add_argument("server_command", nargs=argparse.REMAINDER, help="real MCP server command after --")
 
     report = sub.add_parser("report", help="print day/week summary")
     report.add_argument("--period", choices=["day", "week"], default="day")
@@ -319,6 +362,154 @@ def cmd_measure(args: argparse.Namespace) -> int:
     return return_code
 
 
+def cmd_observe(args: argparse.Namespace) -> int:
+    if getattr(args, "observe_source", None) == "terminal":
+        return _cmd_observe_terminal(args)
+    if getattr(args, "observe_source", None) == "mcp-call":
+        return _cmd_observe_mcp_call(args)
+    print("tokgain observe: expected subcommand 'terminal' or 'mcp-call'", file=os.sys.stderr)
+    return 2
+
+
+def _cmd_observe_terminal(args: argparse.Namespace) -> int:
+    data_dir = ensure_data_dir(args.data_dir)
+    period = args.date or datetime.now().astimezone().date().isoformat()
+    metadata = _load_metadata(args.metadata)
+    output = os.sys.stdin.read()
+    try:
+        raw = build_terminal_observation_record(
+            command=args.observed_command,
+            output=output,
+            agent=args.agent,
+            exit_code=args.exit_code,
+            cwd=args.cwd,
+            tokenizer=args.tokenizer,
+            encoding=args.encoding,
+            model=args.model or _agent_default_model(args.agent),
+            session_id=args.session_id,
+            capture_mode="hermes_hook" if args.agent == "hermes" else "terminal_observer",
+        )
+        if raw is None:
+            print(json.dumps({"recorded": False, "reason": "command not targeted"}, ensure_ascii=False))
+            return 0
+        event = _append_raw_event(
+            data_dir=data_dir,
+            raw=raw,
+            period=period,
+            prices=load_prices(args.prices, offline=args.offline_prices, cache_path=args.price_cache),
+            cli_model=args.model,
+            metadata=metadata,
+        )
+    except ObserveError as exc:
+        event = _append_error_event(data_dir=data_dir, tool="observe", period=period, error=str(exc), cli_model=args.model, metadata=metadata, layer="observer")
+        print(json.dumps({"recorded": False, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+        return 1
+    measurement = (event.get("raw") or {}).get("measurement") or {}
+    print(
+        json.dumps(
+            {
+                "recorded": True,
+                "date": period,
+                "tool": event.get("tool"),
+                "saved_tokens": event.get("saved_tokens"),
+                "baseline_tokens": measurement.get("baseline_tokens"),
+                "optimized_tokens": measurement.get("optimized_tokens"),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _cmd_observe_mcp_call(args: argparse.Namespace) -> int:
+    data_dir = ensure_data_dir(args.data_dir)
+    period = args.date or datetime.now().astimezone().date().isoformat()
+    metadata = _load_metadata(args.metadata)
+    try:
+        payload = json.loads(os.sys.stdin.read() or "{}")
+        if not isinstance(payload, dict):
+            raise ObserveError("stdin JSON must be an object")
+        raw = build_mcp_observation_record(
+            server_tool=args.server_tool,
+            mcp_tool_name=str(payload.get("tool_name") or payload.get("mcp_tool_name") or ""),
+            arguments=payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {},
+            result_text=str(payload.get("result_text") or ""),
+            agent=args.agent,
+            base_path=args.base_path,
+            tokenizer=args.tokenizer,
+            encoding=args.encoding,
+            model=args.model or _agent_default_model(args.agent),
+            session_id=args.session_id,
+            capture_mode="hermes_hook" if args.agent == "hermes" else "mcp_observer",
+        )
+        if raw is None:
+            print(json.dumps({"recorded": False, "reason": "mcp call not targeted"}, ensure_ascii=False))
+            return 0
+        event = _append_raw_event(
+            data_dir=data_dir,
+            raw=raw,
+            period=period,
+            prices=load_prices(args.prices, offline=args.offline_prices, cache_path=args.price_cache),
+            cli_model=args.model,
+            metadata=metadata,
+        )
+    except (ObserveError, json.JSONDecodeError) as exc:
+        event = _append_error_event(data_dir=data_dir, tool=args.server_tool, period=period, error=str(exc), cli_model=args.model, metadata=metadata, layer="mcp-observer")
+        print(json.dumps({"recorded": False, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+        return 1
+    measurement = (event.get("raw") or {}).get("measurement") or {}
+    print(
+        json.dumps(
+            {
+                "recorded": True,
+                "date": period,
+                "tool": event.get("tool"),
+                "saved_tokens": event.get("saved_tokens"),
+                "baseline_tokens": measurement.get("baseline_tokens"),
+                "optimized_tokens": measurement.get("optimized_tokens"),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def cmd_mcp_proxy(args: argparse.Namespace) -> int:
+    data_dir = ensure_data_dir(args.data_dir)
+    period = args.date or datetime.now().astimezone().date().isoformat()
+    metadata = _load_metadata(args.metadata)
+    prices = load_prices(args.prices, offline=args.offline_prices, cache_path=args.price_cache)
+    server_command = list(args.server_command or [])
+    if server_command and server_command[0] == "--":
+        server_command = server_command[1:]
+
+    def emit(raw: dict[str, Any]) -> None:
+        _append_raw_event(
+            data_dir=data_dir,
+            raw=raw,
+            period=period,
+            prices=prices,
+            cli_model=args.model,
+            metadata=metadata,
+        )
+
+    try:
+        return run_mcp_proxy(
+            server_command=server_command,
+            emit_record=emit,
+            agent=args.agent,
+            tool=args.tool,
+            base_path=args.base_path,
+            tokenizer=args.tokenizer,
+            encoding=args.encoding,
+            model=args.model or _agent_default_model(args.agent),
+            session_id=args.session_id,
+        )
+    except ProxyError as exc:
+        print(f"tokgain mcp-proxy: {exc}", file=os.sys.stderr)
+        return 1
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     date = args.date or _default_period_date()
     if args.period == "week":
@@ -384,6 +575,22 @@ def cmd_prices(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(table, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
+
+
+def _append_raw_event(*, data_dir: Path, raw: dict[str, Any], period: str, prices: dict[str, Any], cli_model: str | None, metadata: dict[str, Any]) -> dict[str, Any]:
+    event = _finalize_ok_event(raw, period=period, prices=prices, cli_model=cli_model, metadata=metadata)
+    append_events(data_dir, [event])
+    write_daily_summary(data_dir, period)
+    update_state(data_dir, date=period, events=[event])
+    return event
+
+
+def _append_error_event(*, data_dir: Path, tool: str, period: str, error: str, cli_model: str | None, metadata: dict[str, Any], layer: str | None = None) -> dict[str, Any]:
+    event = _error_event(tool, period=period, error=error, cli_model=cli_model, metadata=metadata, layer=layer)
+    append_events(data_dir, [event])
+    write_daily_summary(data_dir, period)
+    update_state(data_dir, date=period, events=[event])
+    return event
 
 
 def _resolve_tools(requested: list[str] | None) -> list[str]:
@@ -499,6 +706,31 @@ def _load_metadata(path: str | None) -> dict[str, Any]:
     with metadata_path.open("r", encoding="utf-8") as fh:
         payload = json.load(fh)
     return payload if isinstance(payload, dict) else {}
+
+
+def _agent_default_model(agent: str | None) -> str | None:
+    normalized = (agent or "").strip().lower()
+    if normalized == "codex":
+        config_path = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser() / "config.toml"
+        try:
+            data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            model = data.get("model")
+            return str(model) if model else None
+        except Exception:
+            return None
+    if normalized == "hermes":
+        try:
+            import yaml  # type: ignore
+        except Exception:
+            return None
+        config_path = Path(os.environ.get("HERMES_CONFIG", "~/.hermes/config.yaml")).expanduser()
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            model = (data or {}).get("model", {}).get("default")
+            return str(model) if model else None
+        except Exception:
+            return None
+    return None
 
 
 def _env_first(*keys: str) -> str | None:
