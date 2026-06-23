@@ -19,6 +19,7 @@ SAVED_TOTAL_KEYS = (
     "reduced_tokens",
     "reported_saved_tokens",
     "total_saved_tokens",
+    "total_tokens_saved",
     "total_saved",
 )
 SAVED_INPUT_KEYS = (
@@ -53,7 +54,14 @@ SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
 PERIOD_KEYS = ("period", "date", "day")
 SOURCE_KEYS = ("source_ref", "source", "path", "file")
 LAYER_KEYS = ("layer", "compression_layer")
-USD_KEYS = ("usd_saved_estimate", "estimated_usd_saved", "usd_saved", "cost_saved_usd")
+USD_KEYS = (
+    "usd_saved_estimate",
+    "estimated_usd_saved",
+    "usd_saved",
+    "cost_saved_usd",
+    "compression_savings_usd",
+    "savings_usd",
+)
 
 
 def run_json_command(args: list[str], timeout: int = 30) -> Any:
@@ -126,7 +134,20 @@ def _walk_payload(tool: str, default_layer: str, payload: Any, source_ref: str) 
         # A direct record is treated as one event. Do not recurse into its children and double count.
         return
 
-    for key in ("events", "sessions", "records", "items", "data", "totals", "summary", "daily", "days"):
+    for key in (
+        "events",
+        "sessions",
+        "records",
+        "items",
+        "data",
+        "totals",
+        "summary",
+        "daily",
+        "days",
+        "history",
+        "display_session",
+        "lifetime",
+    ):
         value = payload.get(key)
         if value is not None:
             yield from _walk_payload(tool, default_layer, value, source_ref)

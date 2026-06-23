@@ -202,6 +202,55 @@ def test_collect_fff_without_external_ledger_records_clear_error(tmp_path):
     assert "savings ledger" in event["error"]
 
 
+def test_collect_headroom_proxy_savings_v3_history(tmp_path):
+    headroom_file = tmp_path / "proxy_savings.json"
+    headroom_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "lifetime": {"requests": 1, "tokens_saved": 1649},
+                "history": [
+                    {
+                        "timestamp": "2026-06-23T06:49:22Z",
+                        "provider": "openai",
+                        "model": "gpt-test",
+                        "total_tokens_saved": 1649,
+                        "compression_savings_usd": 0.001237,
+                        "total_input_tokens": 48837,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+
+    result = run_cli(
+        [
+            "--data-dir",
+            str(data_dir),
+            "--prices",
+            str(prices),
+            "collect",
+            "--tool",
+            "headroom",
+            "--date",
+            "2026-06-21",
+        ],
+        env={"TOKGAIN_HEADROOM_FILE": headroom_file},
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    events = read_jsonl(data_dir / "events.jsonl")
+    assert len(events) == 1
+    event = events[0]
+    assert event["tool"] == "headroom"
+    assert event["model"] == "gpt-test"
+    assert event["saved_tokens"] == 1649
+    assert event["usd_saved_estimate"] == 0.001649
+
+
 def test_model_missing_event_is_incomplete_and_excluded_from_totals(tmp_path):
     headroom_file = tmp_path / "proxy_savings.json"
     headroom_file.write_text(json.dumps({"saved_tokens": 500, "saved_input_tokens": 500}), encoding="utf-8")
