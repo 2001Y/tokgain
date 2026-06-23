@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .bench import BenchError, SourceResult, build_benchmark_record_from_sources, count_tokens, read_command_source
-from .measure import _default_fff_baseline_cmd
+from .measure import _default_fff_baseline_cmd, _fixed_string_grep_baseline_cmd
 
 
 class ObserveError(BenchError):
@@ -94,7 +94,7 @@ def build_mcp_observation_record(
     if not query:
         return None
     max_results = int(arguments.get("maxResults") or arguments.get("max_results") or 20)
-    root = Path(base_path or ".").expanduser()
+    root = Path(arguments.get("path") or base_path or ".").expanduser()
     baseline_cmd = _default_fff_baseline_cmd(query=query, path=root, fff_tool=fff_tool, max_results=max_results)
     baseline = read_command_source(baseline_cmd, cwd=None, timeout=30, label="baseline")
     optimized = SourceResult(text=result_text, ref=f"mcp:{mcp_tool_name}", kind="mcp")
@@ -215,7 +215,7 @@ def _build_ast_grep_observation(
     root = Path(search_root)
     if not root.is_absolute():
         root = command_cwd / root
-    baseline_cmd = "rg --line-number --column --no-heading --color never --fixed-strings -- " + shlex.quote(pattern) + " " + shlex.quote(str(root))
+    baseline_cmd = _fixed_string_grep_baseline_cmd(query=pattern, path=root, max_results=200)
     baseline = read_command_source(baseline_cmd, cwd=None, timeout=30, label="baseline")
     optimized = SourceResult(text=output, ref=_redact_command(command), kind="terminal_output", exit_code=exit_code)
     raw = build_benchmark_record_from_sources(

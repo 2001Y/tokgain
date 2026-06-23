@@ -674,6 +674,37 @@ def test_observe_ast_grep_terminal_hook_compares_rg_baseline(tmp_path):
     assert event["saved_tokens"] == measurement["baseline_tokens"] - measurement["optimized_tokens"]
 
 
+def test_observe_ast_grep_uses_grep_fallback_when_rg_missing(tmp_path):
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+    work = tmp_path / "repo"
+    work.mkdir()
+    (work / "a.py").write_text("needle\n" * 20, encoding="utf-8")
+
+    result = run_cli(
+        [
+            "--data-dir", str(data_dir),
+            "--prices", str(prices),
+            "observe", "terminal",
+            "--agent", "hermes",
+            "--command", "ast-grep run --pattern needle --lang python .",
+            "--cwd", str(work),
+            "--exit-code", "0",
+            "--date", "2026-06-21",
+            "--model", "gpt-test",
+        ],
+        env={"PATH": "/usr/bin:/bin"},
+        input_text="a.py:1:needle\n",
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    event = read_jsonl(data_dir / "events.jsonl")[0]
+    measurement = event["raw"]["measurement"]
+    assert event["tool"] == "ast-grep"
+    assert "python3 -c" in measurement["baseline_ref"]
+    assert measurement["baseline_tokens"] > measurement["optimized_tokens"]
+
+
 def test_mcp_proxy_passes_through_fff_and_records_event(tmp_path):
     prices = write_prices(tmp_path / "prices.json")
     data_dir = tmp_path / "state"
@@ -738,6 +769,7 @@ for line in sys.stdin:
     measurement = event["raw"]["measurement"]
     assert measurement["capture_mode"] == "mcp_proxy"
     assert measurement["agent"] == "codex"
+    assert str(work) in measurement["baseline_ref"]
     assert measurement["baseline_tokens"] > measurement["optimized_tokens"]
 
 

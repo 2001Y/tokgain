@@ -180,14 +180,42 @@ def _h5i_capture_command(
     return " ".join(shlex.quote(part) for part in parts)
 
 
+def _fixed_string_grep_baseline_cmd(*, query: str, path: Path, max_results: int) -> str:
+    quoted_path = shlex.quote(str(path))
+    quoted_query = shlex.quote(query)
+    max_n = int(max_results)
+    fallback_code = (
+        "import os,sys; q=sys.argv[1]; root=sys.argv[2]; limit=int(sys.argv[3]); n=0; seen=0; max_files=5000\n"
+        "for base,dirs,files in os.walk(root):\n"
+        "    dirs[:] = [d for d in dirs if d not in {'.git','node_modules','.venv','venv','__pycache__'}]\n"
+        "    for name in files:\n"
+        "        seen += 1\n"
+        "        if seen > max_files: raise SystemExit\n"
+        "        p=os.path.join(base,name)\n"
+        "        try:\n"
+        "            with open(p,'r',encoding='utf-8',errors='ignore') as fh:\n"
+        "                for i,line in enumerate(fh,1):\n"
+        "                    if q in line:\n"
+        "                        print(f'{p}:{i}:1:{line.rstrip()}'); n+=1\n"
+        "                        if n>=limit: raise SystemExit\n"
+        "        except (OSError,UnicodeError):\n"
+        "            pass"
+    )
+    return (
+        "if command -v rg >/dev/null 2>&1; then "
+        "rg --line-number --column --no-heading --color never --fixed-strings -- "
+        f"{quoted_query} {quoted_path} | head -n {max_n}; "
+        "else "
+        f"python3 -c {shlex.quote(fallback_code)} {quoted_query} {quoted_path} {max_n}; "
+        "fi"
+    )
+
+
 def _default_fff_baseline_cmd(*, query: str, path: Path, fff_tool: str, max_results: int) -> str:
     quoted_path = shlex.quote(str(path))
     quoted_query = shlex.quote(query)
     if fff_tool == "grep":
-        return (
-            "rg --line-number --column --no-heading --color never --fixed-strings -- "
-            f"{quoted_query} {quoted_path} | head -n {int(max_results)}"
-        )
+        return _fixed_string_grep_baseline_cmd(query=query, path=path, max_results=max_results)
     return f"find {quoted_path} -type f | grep -i -- {quoted_query} | head -n {int(max_results)}"
 
 
