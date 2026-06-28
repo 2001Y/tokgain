@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_measure(args)
         if args.command == "observe":
             return cmd_observe(args)
-        if args.command in {"mcp-proxy", "mcpproxy"}:
+        if args.command == "mcp-proxy":
             return cmd_mcp_proxy(args)
         if args.command == "report":
             return cmd_report(args)
@@ -56,27 +56,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"tokgain: {exc}", file=sys.stderr)
         return 1
     return 2
-
-
-def mcp_proxy_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="tokgain-mcpproxy",
-        description="Run a transparent MCP stdio proxy and record token savings into tokgain.",
-    )
-    parser.add_argument("--data-dir", default=os.environ.get("TOKGAIN_DATA_DIR", str(DEFAULT_DATA_DIR)), help="state directory (default: ~/.local/state/tokgain)")
-    parser.add_argument("--prices", default=os.environ.get("TOKGAIN_PRICES"), help="manual prices.json path; when omitted, refresh LiteLLM + models.dev like ccusage")
-    parser.add_argument("--offline-prices", action="store_true", default=_env_truthy("TOKGAIN_PRICES_OFFLINE"), help="do not fetch live pricing; use --prices, cache, or packaged fallback")
-    parser.add_argument("--price-cache", default=os.environ.get("TOKGAIN_PRICE_CACHE"), help="price cache path (default: ~/.cache/tokgain/prices.json)")
-    _add_mcp_proxy_arguments(parser)
-    args = parser.parse_args(argv)
-    args.command = "mcp-proxy"
-    try:
-        return cmd_mcp_proxy(args)
-    except BrokenPipeError:
-        return 1
-    except Exception as exc:  # pragma: no cover - defensive CLI boundary
-        print(f"tokgain-mcpproxy: {exc}", file=sys.stderr)
-        return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -179,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     observe_mcp.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
     observe_mcp.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
 
-    mcp_proxy = sub.add_parser("mcp-proxy", aliases=["mcpproxy"], help="transparent MCP stdio proxy that records tool savings")
+    mcp_proxy = sub.add_parser("mcp-proxy", help="transparent MCP stdio proxy that records tool savings")
     _add_mcp_proxy_arguments(mcp_proxy)
 
     report = sub.add_parser("report", help="print day/week summary")
@@ -544,7 +523,7 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
             session_id=args.session_id,
         )
     except ProxyError as exc:
-        print(f"tokgain-mcpproxy: {exc}", file=sys.stderr)
+        print(f"tokgain mcp-proxy: {exc}", file=sys.stderr)
         return 1
 
 

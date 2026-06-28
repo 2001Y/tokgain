@@ -29,7 +29,7 @@ def run_mcp_proxy(
     session_id: str | None = None,
 ) -> int:
     if not server_command:
-        raise ProxyError("tokgain-mcpproxy requires a server command after --")
+        raise ProxyError("mcp-proxy requires a server command after --")
     proc = subprocess.Popen(
         server_command,
         stdin=subprocess.PIPE,
@@ -175,4 +175,4 @@ def _observe_server_response(
     except Exception as exc:
         # The proxy must be transparent: measurement failures go to stderr but
         # never corrupt the MCP response stream.
-        print(f"tokgain-mcpproxy observe failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        print(f"tokgain mcp-proxy observe failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)

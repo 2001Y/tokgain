@@ -1,70 +1,76 @@
 # tokgain
 
-`tokgain` は、RTK / headroom / lean-ctx / h5i / fff などの token 節約量を、ローカルの JSONL に追記して後から集計する小さなCLIです。
+[日本語版 README](README.ja.md)
 
-名前は `token` + `gain`。Codex専用名にせず、Claude Code などにも展開しやすい短い名前にしました。
+`tokgain` is a small local CLI for measuring and aggregating token savings from coding-agent compression tools such as RTK, Headroom, lean-ctx, h5i, and FFF.
 
-## Install
+It is intentionally file-first:
 
-```bash
-cd /Users/akitani/_dev/tokgain
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-ln -sf /Users/akitani/_dev/tokgain/.venv/bin/tokgain ~/.local/bin/tokgain
-ln -sf /Users/akitani/_dev/tokgain/.venv/bin/tokgain-mcpproxy ~/.local/bin/tokgain-mcpproxy
-~/.local/bin/tokgain --help
-~/.local/bin/tokgain-mcpproxy --help
-```
-
-必要なら PATH に追加します。
-
-```bash
-export PATH="/Users/akitani/_dev/tokgain/.venv/bin:$PATH"
-```
+- one append-only source of truth: `~/.local/state/tokgain/events.jsonl`
+- no Prometheus, Grafana, database, or SaaS required
+- readable with `jq`, `tail`, `less`, and normal shell tools
+- usable from Codex, Claude Code, Hermes, or any other agent runtime
 
 ## Quick start
 
 ```bash
-tokgain collect --tool all --model gpt-5.5 --allow-errors
-tokgain bench --tool rg --layer search-output --model gpt-5.5 \
+git clone https://github.com/2001Y/tokgain.git
+cd tokgain
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/tokgain --help
+```
+
+Record one savings event by comparing raw output with optimized output:
+
+```bash
+.venv/bin/tokgain bench \
+  --tool rg \
   --baseline-cmd 'rg "TODO|FIXME" .' \
   --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
-tokgain measure h5i --cmd 'pytest -q' --model gpt-5.5
-tokgain measure fff --path . --query 'TODO' --max-results 20 --model gpt-5.5
-# Hermes hook / Codex MCP proxy からの自然利用計測も同じ events.jsonl に入る
-tokgain report --period day
-tokgain show --tool rtk --limit 20
 ```
 
-正本は1つだけです。
+View the result:
 
 ```bash
-tail -n 20 ~/.local/state/tokgain/events.jsonl
-jq . ~/.local/state/tokgain/daily/$(date -v-1d +%F).json
+.venv/bin/tokgain report --period day
+tail -n 5 ~/.local/state/tokgain/events.jsonl
 ```
 
-## Commands
+That is the core workflow: measure or import savings, append JSONL events, then report later.
+
+## What to use it for
+
+`tokgain` helps answer questions like:
+
+- How many prompt-equivalent tokens did a compression tool save?
+- Which tool saved tokens in real agent workflows?
+- Did a change reduce output size or just move the cost elsewhere?
+- How much estimated API cost did the saved tokens represent?
+- Which events were incomplete because model or price data was missing?
+
+It does **not** perform compression itself. It records and normalizes savings reported or observed from other tools.
+
+## Core commands
 
 ```bash
-tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i|fff] [--date YYYY-MM-DD] [--model MODEL] [--allow-errors]
-tokgain bench --tool TOOL (--baseline-file PATH|--baseline-cmd CMD) (--optimized-file PATH|--optimized-cmd CMD) [--layer LAYER] [--model MODEL]
-tokgain measure h5i --cmd CMD [--h5i-format compact|json|summary] [--kind KIND] [--model MODEL]
-tokgain measure fff --path PATH --query QUERY [--fff-tool grep|find_files] [--baseline-cmd CMD] [--model MODEL]
-tokgain observe terminal --agent hermes --command CMD [--duration-ms MS] [--turn-id ID] [--tool-call-id ID] [--api-request-id ID] [--cwd DIR] [--model MODEL] < output.txt
-tokgain observe mcp-call --agent hermes --server-tool fff --base-path PATH [--duration-ms MS] [--turn-id ID] [--tool-call-id ID] [--api-request-id ID] [--model MODEL] < payload.json
-tokgain-mcpproxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
-# `tokgain mcp-proxy ...` / `tokgain mcpproxy ...` も互換 alias として利用可能
-tokgain report --period day|week [--date YYYY-MM-DD] [--json]
-tokgain show [--tool TOOL] [--status ok|error] [--limit N]
+tokgain collect --tool auto
+tokgain bench --tool TOOL --baseline-cmd CMD --optimized-cmd CMD
+tokgain measure h5i --cmd CMD
+tokgain measure fff --path PATH --query QUERY
+tokgain observe terminal --agent AGENT --command CMD < output.txt
+tokgain observe mcp-call --agent AGENT --server-tool TOOL --base-path PATH < payload.json
+tokgain mcp-proxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
+tokgain report --period day|week
+tokgain show --limit 20
 tokgain export --format jsonl|json
-tokgain doctor [--json]
+tokgain doctor
 tokgain prices show
-tokgain prices refresh
 ```
 
-## Data layout
+## Data model
 
-既定の保存先:
+Default state directory:
 
 ```text
 ~/.local/state/tokgain/
@@ -73,177 +79,129 @@ tokgain prices refresh
   state.json
 ```
 
-`events.jsonl` は追記専用の正本、`daily/*.json` は派生物です。
+`events.jsonl` is the source of truth. `daily/*.json` and reports are derived artifacts.
 
-各 event には安定 `event_id` が付き、同じ `event_id` は再追記されません。これは同じ native ledger/source record を `collect` し直した時の二重計上を防ぐためです。RTK と Headroom など、異なる tool/layer 間の意味的重複は初版では排除しません。
+Each event includes a stable `event_id`. Appending skips existing `event_id`s so re-importing the same native source record does not double count it. Semantic overlap between different tools or layers is not deduplicated in the first version.
 
-## model の扱い
-
-解決順:
-
-1. `collect --model`
-2. `collect --metadata` / `TOKGAIN_SESSION_METADATA`
-3. adapter payload 内の `model`
-4. `TOKGAIN_MODEL`, `CODEX_MODEL`, `CLAUDE_MODEL`, `OPENAI_MODEL`, `ANTHROPIC_MODEL`
-5. `model_missing`
-
-`model_missing` は `incomplete=true`, `exclude_from_totals=true` になり、totals から外します。
-
-## 価格表
-
-価格表は ccusage と同じ考え方で取得します。
-
-1. `--prices` / `TOKGAIN_PRICES` があれば、その手動JSONを使う。
-2. 指定がなければ LiteLLM の `model_prices_and_context_window.json` を取得する。
-3. LiteLLM に無いモデルは `models.dev/api.json` で補う。
-4. 取得成功時は `~/.cache/tokgain/prices.json` に保存する。
-5. `--offline-prices` 時やネットワーク失敗時は cache、最後に packaged placeholder を使う。
-
-明示的に更新する場合:
-
-```bash
-tokgain prices refresh
-```
-
-手動JSONを固定したい場合:
-
-```bash
-tokgain --prices ~/.config/tokgain/prices.json collect --tool auto --model gpt-5.5
-```
-
-形式:
+Typical fields:
 
 ```json
 {
-  "version": "2026-06-22",
-  "currency": "USD",
-  "models": {
-    "example-model": {
-      "input_per_1m": 1.0,
-      "output_per_1m": 2.0
-    }
-  }
+  "ts": "2026-06-28T12:00:00+09:00",
+  "tool": "fff",
+  "layer": "mcp-observer",
+  "agent": "codex",
+  "model": "gpt-5.5",
+  "period": "2026-06-28",
+  "saved_tokens": 1200,
+  "saved_input_tokens": 1200,
+  "saved_output_tokens": null,
+  "estimate_mode": "prompt_equivalent",
+  "usd_saved_estimate": 0.0,
+  "price_table_version": "2026-06-28",
+  "source_ref": "mcp:fff",
+  "session_id": "..."
 }
 ```
 
-未知モデルは `price_missing=true`、`usd_saved_estimate=0.0` としてイベント自体は残します。
+## Configuration and advanced usage
 
-## Adapter sources
+Most options are optional. Keep quick-start commands short and move environment-specific details here.
+
+### Model resolution
+
+`model` is resolved in this order:
+
+1. explicit `--model`
+2. metadata file from `--metadata` or `TOKGAIN_SESSION_METADATA`
+3. adapter/native payload model
+4. `TOKGAIN_MODEL`, `CODEX_MODEL`, `CLAUDE_MODEL`, `OPENAI_MODEL`, `ANTHROPIC_MODEL`
+5. `model_missing`
+
+Events with `model_missing` are marked incomplete and excluded from totals.
+
+### Price table
+
+By default, `tokgain` tries to fetch live pricing in a ccusage-like order:
+
+1. explicit `--prices` / `TOKGAIN_PRICES`
+2. LiteLLM model prices
+3. models.dev fallback
+4. `~/.cache/tokgain/prices.json`
+5. packaged placeholder fallback
+
+Useful commands:
+
+```bash
+tokgain prices refresh
+tokgain --offline-prices prices show
+tokgain --prices ~/.config/tokgain/prices.json collect --tool auto --model gpt-5.5
+```
+
+### Adapter sources
 
 | tool | source |
 |---|---|
-| rtk | `rtk gain --all --format json` |
-| headroom | `TOKGAIN_HEADROOM_FILE`, `~/.headroom/proxy_savings.json`, `headroom perf --format json` |
+| RTK | `rtk gain --all --format json` |
+| Headroom | `TOKGAIN_HEADROOM_FILE`, `~/.headroom/proxy_savings.json`, `headroom perf --format json` |
 | lean-ctx | `TOKGAIN_LEAN_CTX_FILE`, `~/.lean-ctx/savings.jsonl`, `lean-ctx gain --json` |
-| h5i | `TOKGAIN_H5I_SUMMARY_FILE`, `~/.h5i/savings.jsonl` など `h5i capture run --format json` 由来の外部JSONL |
-| fff | `TOKGAIN_FFF_FILE`, `~/.fff/savings.jsonl` などの外部ベンチ/エクスポートJSONL |
+| h5i | external JSONL from `h5i capture run --format json`-style summaries |
+| FFF | external benchmark JSONL or observed MCP calls |
 
-### Headroom integration policy
+### Codex FFF MCP proxy
 
-Headroom 内で token 節約ツールを統合する場合も、`tokgain` は「似た実装」を作りません。Headroom 側は本物のツールを呼びます。
-
-- `rtk`: 実体の `rtk` binary / hooks / `rtk gain ...`
-- `lean-ctx`: 実体の `lean-ctx` binary / setup / `lean-ctx gain --json`
-- `h5i`: 実体の `h5i capture run` が保存した raw object / summary / ledger
-
-Headroom は provider proxy と実体ツール orchestration、`tokgain` は Headroom/各ツールが出した savings event の append-only 集計に寄せます。
-
-## Built-in measurement for h5i / fff
-
-`h5i` と `fff-mcp` は日次の native ledger を持たないため、`collect` だけでは節約量を作れません。代わりに `tokgain measure` がツール側で baseline と optimized を実行/取得して、同じ `events.jsonl` に保存します。
-
-```bash
-# raw command と h5i capture run の出力を比較する。コマンドは2回走る。
-tokgain measure h5i --cmd 'pytest -q' --kind test --model gpt-5.5
-
-# rg の生出力と fff-mcp grep のMCP結果を比較する。
-tokgain measure fff --path . --query 'PrepareUpload' --max-results 20 --model gpt-5.5
-
-# fff の baseline を自分で固定したい場合
-tokgain measure fff --path . --query 'PrepareUpload' \
-  --baseline-cmd 'rg --line-number --column --no-heading --color never PrepareUpload src | head -20'
-```
-
-- `measure h5i` は指定コマンドを raw と `h5i capture run` で2回実行します。h5iの性質上、実行ディレクトリはgit repo内にしてください。副作用のあるコマンドには使わず、test/build/search/log確認など再実行可能なものに限定してください。
-- `measure fff` は内部で `fff-mcp` にMCP接続し、`grep` または `find_files` を呼びます。比較対象の raw baseline は既定で `rg` / `find` ですが、厳密に揃えたい場合は `--baseline-cmd` を渡してください。
-- `saved_tokens` は負数も許容します。小さい出力やmetadata過多では、h5i/fff側が増えることもあります。
-
-## Benchmark mode
-
-`rg`, `ast-grep`, `fff-mcp`, `tokensaver`, `contextmode`, `codereviewgraph`, Claude Code / Codex の独自context圧縮など、native ledger が無いものは `tokgain bench` で測ります。正本は同じ `events.jsonl` です。
-
-```bash
-# ファイル同士を比較
-tokgain bench --tool ast-grep --layer search-output --model gpt-5.5 \
-  --baseline-file /tmp/raw-rg.txt \
-  --optimized-file /tmp/ast-grep-outline.txt
-
-# コマンド出力同士を比較。stdout+stderrを、同じtokenizerで数える
-tokgain bench --tool rg --layer search-output --model gpt-5.5 \
-  --baseline-cmd 'rg "TODO|FIXME" .' \
-  --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
-```
-
-- `saved_tokens = baseline_tokens - optimized_tokens`。悪化した場合は負数のまま残します。
-- `saved_input_tokens` に同じ値を入れ、API換算は `prompt_equivalent` として扱います。
-- 既定 tokenizer は `auto`。`tiktoken` があれば `o200k_base`、無ければ依存なしの `regex_v1` 概算です。再現性重視なら `--tokenizer regex` を明示します。
-
-`fff` の公式実体は `fff-mcp` MCP server です。ファイル検索を高速・省コンテキスト化しますが、現時点では native な savings ledger を出さないため、`tokgain` は存在しない `fff stats` のようなコマンドを推測実行しません。fff の節約量は `tokgain measure fff` でMCP結果を直接測るか、外部ベンチ結果を `TOKGAIN_FFF_FILE` / `~/.fff/savings.jsonl` に1行1イベントで置いて集計します。
-
-`collect --tool auto` は利用可能な source だけ読みます。`collect --tool all --allow-errors` は全adapterを毎回走らせ、native ledger が無い/対象日レコードが無い tool も ERROR event として残しつつ終了コードは0にします。明示指定した tool が失敗し、`--allow-errors` を付けない場合は ERROR event を残して終了コード `1` です。
-
-## Natural-use instrumentation
-
-普段の Codex / Hermes 利用中に自動で記録する場合も、正本は同じ `~/.local/state/tokgain/events.jsonl` です。
-
-### Hermes
-
-Hermes は plugin hook を使います。`~/.hermes/plugins/tokgain-observer/` の `post_tool_call` hook が fail-open で `tokgain observe ...` を呼びます。
-
-対象:
-
-- `terminal` tool 経由の `h5i ...`
-- `terminal` tool 経由の `ast-grep ...` / `sg ...`
-- `mcp_fff_*` など fff MCP tool 経由の検索
-
-有効化:
-
-```bash
-hermes plugins enable tokgain-observer
-hermes gateway restart   # gateway 利用時。CLI は新セッションで反映
-```
-
-### Codex
-
-Codex は fff MCP server を `tokgain-mcpproxy` 経由にします。MCP設定上も `command` 名だけで tokgain の proxy だと分かるように、公開インターフェースは `tokgain-mcpproxy` を推奨します。
+Use the single supported command shape: `tokgain mcp-proxy`.
 
 ```toml
 [mcp_servers.fff]
-command = "/Users/akitani/.local/bin/tokgain-mcpproxy"
-args = ["--agent", "codex", "--tool", "fff", "--base-path", "/Users/akitani/_dev", "--", "/opt/homebrew/bin/fff-mcp", "/Users/akitani/_dev"]
+command = "/Users/akitani/.local/bin/tokgain"
+args = ["mcp-proxy", "--agent", "codex", "--tool", "fff", "--base-path", "/Users/akitani/_dev", "--", "/opt/homebrew/bin/fff-mcp", "/Users/akitani/_dev"]
 ```
 
-既存互換のため `tokgain mcp-proxy ...` と `tokgain mcpproxy ...` も残しています。
+No `tokgain-mcpproxy` executable or `mcpproxy` alias is provided. Keeping one command shape avoids configuration drift.
 
-Codex / Hermes 以外へ展開しても `capture_mode` と `agent` で区別できます。イベントには raw output 本文ではなく、tokens / bytes / sha256 / redacted metadata を保存します。
+### Hermes hook observation
 
-Hermes hook などから渡せる場合は `duration_ms`, `turn_id`, `tool_call_id`, `api_request_id` も保存します。これにより、token 節約量だけでなく wall time・retry・turn/API request 単位の相関を後から見られます。
+Hermes can record natural-use events through a plugin hook that calls `tokgain observe ...` after tool calls.
 
-## launchd
+Example targets:
 
-テンプレートだけ同梱しています。登録する場合:
+- terminal output from `h5i ...`
+- terminal output from `ast-grep ...` / `sg ...`
+- FFF MCP tool results
+
+The observed events are written to the same `events.jsonl` ledger.
+
+### h5i / FFF measurement
+
+`h5i` and `fff-mcp` do not always expose a daily native savings ledger, so `tokgain measure` can generate baseline-vs-optimized events.
 
 ```bash
-cd /Users/akitani/_dev/tokgain
-scripts/install-launchd.sh
+tokgain measure h5i --cmd 'pytest -q'
+tokgain measure fff --path . --query 'PrepareUpload'
 ```
 
-毎日 0:00 に `tokgain collect --tool all --allow-errors` を実行します。launchd の最小PATHには `~/.local/bin` や Homebrew が入らないため、テンプレート側で `~/.local/bin:/opt/homebrew/bin:/usr/local/bin` を明示します。
+`measure h5i` runs the command twice: raw and via `h5i capture run`. Use it only for repeatable commands such as tests, builds, searches, and log inspection.
 
 ## Development
 
 ```bash
-cd /Users/akitani/_dev/tokgain
-pytest -q
-python -m tokgain.cli --help
+git clone https://github.com/2001Y/tokgain.git
+cd tokgain
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/pytest -q
+.venv/bin/python -m tokgain.cli --help
 ```
+
+## Project stance
+
+- append-only local ledger first
+- observable failures instead of silent success
+- real tools over lookalike reimplementations
+- no raw prompt/tool output stored by default
+- one obvious command path per integration
+
+## License
+
+MIT
