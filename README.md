@@ -48,8 +48,8 @@ tokgain collect [--tool auto|all|rtk|headroom|lean-ctx|h5i|fff] [--date YYYY-MM-
 tokgain bench --tool TOOL (--baseline-file PATH|--baseline-cmd CMD) (--optimized-file PATH|--optimized-cmd CMD) [--layer LAYER] [--model MODEL]
 tokgain measure h5i --cmd CMD [--h5i-format compact|json|summary] [--kind KIND] [--model MODEL]
 tokgain measure fff --path PATH --query QUERY [--fff-tool grep|find_files] [--baseline-cmd CMD] [--model MODEL]
-tokgain observe terminal --agent hermes --command CMD [--cwd DIR] [--model MODEL] < output.txt
-tokgain observe mcp-call --agent hermes --server-tool fff --base-path PATH [--model MODEL] < payload.json
+tokgain observe terminal --agent hermes --command CMD [--duration-ms MS] [--turn-id ID] [--tool-call-id ID] [--api-request-id ID] [--cwd DIR] [--model MODEL] < output.txt
+tokgain observe mcp-call --agent hermes --server-tool fff --base-path PATH [--duration-ms MS] [--turn-id ID] [--tool-call-id ID] [--api-request-id ID] [--model MODEL] < payload.json
 tokgain mcp-proxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
 tokgain report --period day|week [--date YYYY-MM-DD] [--json]
 tokgain show [--tool TOOL] [--status ok|error] [--limit N]
@@ -71,6 +71,8 @@ tokgain prices refresh
 ```
 
 `events.jsonl` は追記専用の正本、`daily/*.json` は派生物です。
+
+各 event には安定 `event_id` が付き、同じ `event_id` は再追記されません。これは同じ native ledger/source record を `collect` し直した時の二重計上を防ぐためです。RTK と Headroom など、異なる tool/layer 間の意味的重複は初版では排除しません。
 
 ## model の扱い
 
@@ -132,6 +134,16 @@ tokgain --prices ~/.config/tokgain/prices.json collect --tool auto --model gpt-5
 | lean-ctx | `TOKGAIN_LEAN_CTX_FILE`, `~/.lean-ctx/savings.jsonl`, `lean-ctx gain --json` |
 | h5i | `TOKGAIN_H5I_SUMMARY_FILE`, `~/.h5i/savings.jsonl` など `h5i capture run --format json` 由来の外部JSONL |
 | fff | `TOKGAIN_FFF_FILE`, `~/.fff/savings.jsonl` などの外部ベンチ/エクスポートJSONL |
+
+### Headroom integration policy
+
+Headroom 内で token 節約ツールを統合する場合も、`tokgain` は「似た実装」を作りません。Headroom 側は本物のツールを呼びます。
+
+- `rtk`: 実体の `rtk` binary / hooks / `rtk gain ...`
+- `lean-ctx`: 実体の `lean-ctx` binary / setup / `lean-ctx gain --json`
+- `h5i`: 実体の `h5i capture run` が保存した raw object / summary / ledger
+
+Headroom は provider proxy と実体ツール orchestration、`tokgain` は Headroom/各ツールが出した savings event の append-only 集計に寄せます。
 
 ## Built-in measurement for h5i / fff
 
@@ -209,6 +221,8 @@ args = ["mcp-proxy", "--agent", "codex", "--tool", "fff", "--base-path", "/Users
 ```
 
 Codex / Hermes 以外へ展開しても `capture_mode` と `agent` で区別できます。イベントには raw output 本文ではなく、tokens / bytes / sha256 / redacted metadata を保存します。
+
+Hermes hook などから渡せる場合は `duration_ms`, `turn_id`, `tool_call_id`, `api_request_id` も保存します。これにより、token 節約量だけでなく wall time・retry・turn/API request 単位の相関を後から見られます。
 
 ## launchd
 

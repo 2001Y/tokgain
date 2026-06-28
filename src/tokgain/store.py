@@ -18,9 +18,34 @@ def ensure_data_dir(data_dir: str | Path) -> Path:
 
 def append_events(data_dir: str | Path, events: Iterable[dict[str, Any]]) -> None:
     path = ensure_data_dir(data_dir) / "events.jsonl"
+    seen_event_ids = _read_event_ids(path)
     with path.open("a", encoding="utf-8") as fh:
         for event in events:
+            event_id = event.get("event_id")
+            if event_id and event_id in seen_event_ids:
+                continue
             fh.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+            if event_id:
+                seen_event_ids.add(str(event_id))
+
+
+def _read_event_ids(path: Path) -> set[str]:
+    event_ids: set[str] = set()
+    if not path.exists():
+        return event_ids
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event_id = event.get("event_id")
+            if event_id:
+                event_ids.add(str(event_id))
+    return event_ids
 
 
 def read_events(data_dir: str | Path) -> list[dict[str, Any]]:

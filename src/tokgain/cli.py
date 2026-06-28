@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import tomllib
@@ -141,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     observe_terminal.add_argument("--model", default=None, help="explicit model override")
     observe_terminal.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
     observe_terminal.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    _add_runtime_context_arguments(observe_terminal)
     observe_terminal.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
     observe_terminal.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
     observe_mcp = observe_sub.add_parser("mcp-call", help="observe an MCP tool result from stdin JSON")
@@ -151,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     observe_mcp.add_argument("--model", default=None, help="explicit model override")
     observe_mcp.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
     observe_mcp.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    _add_runtime_context_arguments(observe_mcp)
     observe_mcp.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
     observe_mcp.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
 
@@ -188,6 +191,13 @@ def build_parser() -> argparse.ArgumentParser:
     prices_sub.add_parser("refresh", help="fetch LiteLLM + models.dev pricing and update cache")
 
     return parser
+
+
+def _add_runtime_context_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--duration-ms", type=int, default=None, help="observed tool wall time in milliseconds")
+    parser.add_argument("--turn-id", default=None, help="agent turn id for correlation")
+    parser.add_argument("--tool-call-id", default=None, help="tool call id for correlation")
+    parser.add_argument("--api-request-id", default=None, help="provider/API request id for correlation")
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
@@ -392,6 +402,7 @@ def _cmd_observe_terminal(args: argparse.Namespace) -> int:
         if raw is None:
             print(json.dumps({"recorded": False, "reason": "command not targeted"}, ensure_ascii=False))
             return 0
+        _attach_runtime_context(raw, args=args, metadata=metadata)
         event = _append_raw_event(
             data_dir=data_dir,
             raw=raw,
@@ -445,6 +456,7 @@ def _cmd_observe_mcp_call(args: argparse.Namespace) -> int:
         if raw is None:
             print(json.dumps({"recorded": False, "reason": "mcp call not targeted"}, ensure_ascii=False))
             return 0
+        _attach_runtime_context(raw, args=args, metadata=metadata)
         event = _append_raw_event(
             data_dir=data_dir,
             raw=raw,
@@ -639,6 +651,10 @@ def _finalize_ok_event(raw: dict[str, Any], *, period: str, prices: dict[str, An
         "saved_cache_read_tokens": raw.get("saved_cache_read_tokens"),
         "source_ref": raw.get("source_ref"),
         "session_id": raw.get("session_id") or metadata.get("session_id") or _env_first("CODEX_SESSION_ID", "CLAUDE_SESSION_ID", "HERMES_SESSION_ID"),
+        "duration_ms": _optional_int(_runtime_field(raw, metadata, "duration_ms", "TOKGAIN_DURATION_MS")),
+        "turn_id": _runtime_field(raw, metadata, "turn_id", "TOKGAIN_TURN_ID"),
+        "tool_call_id": _runtime_field(raw, metadata, "tool_call_id", "TOKGAIN_TOOL_CALL_ID"),
+        "api_request_id": _runtime_field(raw, metadata, "api_request_id", "TOKGAIN_API_REQUEST_ID"),
         "incomplete": incomplete,
         "exclude_from_totals": incomplete,
         "raw": raw.get("raw"),
@@ -656,12 +672,13 @@ def _finalize_ok_event(raw: dict[str, Any], *, period: str, prices: dict[str, An
             "price_missing": price_missing,
         }
     )
+    event["event_id"] = _event_id(event)
     return event
 
 
 def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, metadata: dict[str, Any], layer: str | None = None) -> dict[str, Any]:
     model = _resolve_model(cli_model=cli_model, metadata=metadata, raw={})
-    return {
+    event = {
         "schema_version": SCHEMA_VERSION,
         "status": "error",
         "ts": _now_iso(),
@@ -680,10 +697,16 @@ def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, m
         "price_missing": True,
         "source_ref": tool,
         "session_id": metadata.get("session_id") or _env_first("CODEX_SESSION_ID", "CLAUDE_SESSION_ID", "HERMES_SESSION_ID"),
+        "duration_ms": _optional_int(_runtime_field({}, metadata, "duration_ms", "TOKGAIN_DURATION_MS")),
+        "turn_id": _runtime_field({}, metadata, "turn_id", "TOKGAIN_TURN_ID"),
+        "tool_call_id": _runtime_field({}, metadata, "tool_call_id", "TOKGAIN_TOOL_CALL_ID"),
+        "api_request_id": _runtime_field({}, metadata, "api_request_id", "TOKGAIN_API_REQUEST_ID"),
         "incomplete": model == MODEL_MISSING,
         "exclude_from_totals": True,
         "error": error,
     }
+    event["event_id"] = _event_id(event)
+    return event
 
 
 def _resolve_model(*, cli_model: str | None, metadata: dict[str, Any], raw: dict[str, Any]) -> str:
@@ -694,6 +717,64 @@ def _resolve_model(*, cli_model: str | None, metadata: dict[str, Any], raw: dict
         or _env_first("TOKGAIN_MODEL", "CODEX_MODEL", "CLAUDE_MODEL", "OPENAI_MODEL", "ANTHROPIC_MODEL")
         or MODEL_MISSING
     )
+
+
+def _attach_runtime_context(raw: dict[str, Any], *, args: argparse.Namespace, metadata: dict[str, Any]) -> None:
+    for key in ("duration_ms", "turn_id", "tool_call_id", "api_request_id"):
+        value = getattr(args, key, None) or metadata.get(key)
+        if value not in (None, ""):
+            raw[key] = value
+
+
+def _runtime_field(raw: dict[str, Any], metadata: dict[str, Any], key: str, env_key: str) -> Any:
+    value = raw.get(key)
+    if value not in (None, ""):
+        return value
+    value = metadata.get(key)
+    if value not in (None, ""):
+        return value
+    return os.environ.get(env_key)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_id(event: dict[str, Any]) -> str:
+    event_raw = event.get("raw")
+    raw: dict[str, Any] = event_raw if isinstance(event_raw, dict) else {}
+    raw_measurement = raw.get("measurement")
+    measurement: dict[str, Any] = raw_measurement if isinstance(raw_measurement, dict) else {}
+    identity = {
+        "schema_version": event.get("schema_version"),
+        "status": event.get("status"),
+        "period": event.get("period"),
+        "tool": event.get("tool"),
+        "layer": event.get("layer"),
+        "model": event.get("model"),
+        "source_ref": event.get("source_ref"),
+        "session_id": event.get("session_id"),
+        "saved_tokens": event.get("saved_tokens"),
+        "saved_input_tokens": event.get("saved_input_tokens"),
+        "saved_output_tokens": event.get("saved_output_tokens"),
+        "saved_cache_creation_tokens": event.get("saved_cache_creation_tokens"),
+        "saved_cache_read_tokens": event.get("saved_cache_read_tokens"),
+        "turn_id": event.get("turn_id"),
+        "tool_call_id": event.get("tool_call_id"),
+        "api_request_id": event.get("api_request_id"),
+        "source_event_id": raw.get("source_event_id"),
+        "baseline_ref": measurement.get("baseline_ref"),
+        "optimized_ref": measurement.get("optimized_ref"),
+        "optimized_sha256": measurement.get("optimized_sha256"),
+        "error": event.get("error"),
+    }
+    digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
 
 
 def _load_metadata(path: str | None) -> dict[str, Any]:

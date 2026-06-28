@@ -11,6 +11,18 @@ SRC = ROOT / "src"
 
 def run_cli(args, *, env=None, input_text=None):
     merged_env = os.environ.copy()
+    for key in (
+        "TOKGAIN_MODEL",
+        "CODEX_MODEL",
+        "CLAUDE_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "TOKGAIN_SESSION_METADATA",
+        "CODEX_SESSION_ID",
+        "CLAUDE_SESSION_ID",
+        "HERMES_SESSION_ID",
+    ):
+        merged_env.pop(key, None)
     merged_env["PYTHONPATH"] = str(SRC)
     if env:
         merged_env.update({k: str(v) for k, v in env.items()})
@@ -106,6 +118,47 @@ print(json.dumps({
     state = json.loads((data_dir / "state.json").read_text(encoding="utf-8"))
     assert state["last_success_date"] == "2026-06-21"
     assert state["schema_version"] == 1
+
+
+def test_collect_same_native_record_twice_is_deduped_by_event_id(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_executable(
+        bin_dir / "rtk",
+        """#!/usr/bin/env python3
+import json
+print(json.dumps({
+  "sessions": [
+    {"session_id": "s1", "model": "gpt-test", "saved_input_tokens": 800, "saved_output_tokens": 200, "source_ref": "fake-rtk"}
+  ]
+}))
+""",
+    )
+    prices = write_prices(tmp_path / "prices.json")
+    data_dir = tmp_path / "state"
+    args = [
+        "--data-dir",
+        str(data_dir),
+        "--prices",
+        str(prices),
+        "collect",
+        "--tool",
+        "rtk",
+        "--date",
+        "2026-06-21",
+    ]
+
+    first = run_cli(args, env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    second = run_cli(args, env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert second.returncode == 0, second.stderr + second.stdout
+    events = read_jsonl(data_dir / "events.jsonl")
+    assert len(events) == 1
+    assert events[0]["event_id"].startswith("sha256:")
+    daily = json.loads((data_dir / "daily" / "2026-06-21.json").read_text(encoding="utf-8"))
+    assert daily["event_count"] == 1
+    assert daily["totals"]["reported_saved_tokens"] == 1000
 
 
 def test_cli_model_overrides_metadata_and_payload(tmp_path):
@@ -673,6 +726,10 @@ def test_observe_h5i_terminal_hook_parses_reduction_from_stdin(tmp_path):
             "--date", "2026-06-21",
             "--model", "gpt-test",
             "--session-id", "hermes-session",
+            "--duration-ms", "1234",
+            "--turn-id", "turn-1",
+            "--tool-call-id", "tool-call-1",
+            "--api-request-id", "api-1",
         ],
         input_text=h5i_output,
     )
@@ -683,6 +740,10 @@ def test_observe_h5i_terminal_hook_parses_reduction_from_stdin(tmp_path):
     assert event["layer"] == "audit"
     assert event["saved_tokens"] == 90
     assert event["session_id"] == "hermes-session"
+    assert event["duration_ms"] == 1234
+    assert event["turn_id"] == "turn-1"
+    assert event["tool_call_id"] == "tool-call-1"
+    assert event["api_request_id"] == "api-1"
     measurement = event["raw"]["measurement"]
     assert measurement["capture_mode"] == "hermes_hook"
     assert measurement["baseline_tokens"] == 100

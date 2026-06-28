@@ -49,6 +49,11 @@
 - `price_table_version`
 - `source_ref`
 - `session_id`
+- `event_id`
+- `duration_ms`
+- `turn_id`
+- `tool_call_id`
+- `api_request_id`
 - `incomplete`
 - `exclude_from_totals`
 
@@ -93,6 +98,13 @@
 - 優先: `TOKGAIN_HEADROOM_FILE`
 - 次点: `~/.headroom/proxy_savings.json`
 - 次点: `headroom perf --format json`
+- Headroom 側の統合では、`rtk` / `lean-ctx` / `h5i` を再実装しない。
+- Headroom 内部 adapter は必ず実体コマンドまたは実体 ledger を呼ぶ。
+  - `rtk`: `rtk gain ...` / RTK hooks の実績
+  - `lean-ctx`: `lean-ctx gain --json` / lean-ctx setup の実績
+  - `h5i`: `h5i capture run` 由来の保存物・summary・ledger
+- `tokgain` は Headroom が出した統合済み savings と、各ツール単体の ledger の両方を読めるが、Headroom 内統合を「似た実装」で代替しない。
+- Headroom の責務は provider proxy + 実体ツール orchestration。`tokgain` の責務は append-only 集計。
 
 ### lean-ctx
 
@@ -132,6 +144,10 @@ tokgain prices refresh
 ```
 
 ## Benchmark 方針
+
+同一 source record の二重取り込みを避けるため、全 event に安定 `event_id` を付ける。`append_events` は既存 `event_id` を再追記しない。これは「同じ collect/import の二重計上」だけを防ぐもので、RTK と Headroom のような tool 間の意味的重複は初版では排除しない。
+
+自然利用観測では、可能な限り `duration_ms`, `turn_id`, `tool_call_id`, `api_request_id` を残す。これにより token 節約だけでなく、wall time・retry・turn/API単位の相関を後から分析できる。
 
 native ledger が無いツールは `tokgain bench` で baseline / optimized の出力を同じ tokenizer で測る。
 
