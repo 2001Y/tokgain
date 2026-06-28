@@ -6,3 +6,8 @@ __pycache__/
 build/
 dist/
 .coverage
+
+# Local agent scaffolding; useful on this machine, not part of the public tool.
+AGENTS.md
+CLAUDE.md
+.claude/

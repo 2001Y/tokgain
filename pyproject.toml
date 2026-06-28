@@ -19,6 +19,7 @@ classifiers = [
 
 [project.scripts]
 tokgain = "tokgain.cli:main"
+tokgain-mcpproxy = "tokgain.cli:mcp_proxy_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

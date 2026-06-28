@@ -853,7 +853,7 @@ for line in sys.stdin:
             sys.executable, "-m", "tokgain.cli",
             "--data-dir", str(data_dir),
             "--prices", str(prices),
-            "mcp-proxy",
+            "mcpproxy",
             "--agent", "codex",
             "--tool", "fff",
             "--base-path", str(work),

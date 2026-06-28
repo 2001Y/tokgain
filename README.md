@@ -11,7 +11,9 @@ cd /Users/akitani/_dev/tokgain
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 ln -sf /Users/akitani/_dev/tokgain/.venv/bin/tokgain ~/.local/bin/tokgain
+ln -sf /Users/akitani/_dev/tokgain/.venv/bin/tokgain-mcpproxy ~/.local/bin/tokgain-mcpproxy
 ~/.local/bin/tokgain --help
+~/.local/bin/tokgain-mcpproxy --help
 ```
 
 必要なら PATH に追加します。
@@ -50,7 +52,8 @@ tokgain measure h5i --cmd CMD [--h5i-format compact|json|summary] [--kind KIND] 
 tokgain measure fff --path PATH --query QUERY [--fff-tool grep|find_files] [--baseline-cmd CMD] [--model MODEL]
 tokgain observe terminal --agent hermes --command CMD [--duration-ms MS] [--turn-id ID] [--tool-call-id ID] [--api-request-id ID] [--cwd DIR] [--model MODEL] < output.txt
 tokgain observe mcp-call --agent hermes --server-tool fff --base-path PATH [--duration-ms MS] [--turn-id ID] [--tool-call-id ID] [--api-request-id ID] [--model MODEL] < payload.json
-tokgain mcp-proxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
+tokgain-mcpproxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
+# `tokgain mcp-proxy ...` / `tokgain mcpproxy ...` も互換 alias として利用可能
 tokgain report --period day|week [--date YYYY-MM-DD] [--json]
 tokgain show [--tool TOOL] [--status ok|error] [--limit N]
 tokgain export --format jsonl|json
@@ -212,13 +215,15 @@ hermes gateway restart   # gateway 利用時。CLI は新セッションで反�
 
 ### Codex
 
-Codex は fff MCP server を `tokgain mcp-proxy` 経由にします。
+Codex は fff MCP server を `tokgain-mcpproxy` 経由にします。MCP設定上も `command` 名だけで tokgain の proxy だと分かるように、公開インターフェースは `tokgain-mcpproxy` を推奨します。
 
 ```toml
 [mcp_servers.fff]
-command = "/Users/akitani/.local/bin/tokgain"
-args = ["mcp-proxy", "--agent", "codex", "--tool", "fff", "--base-path", "/Users/akitani/_dev", "--", "/opt/homebrew/bin/fff-mcp", "/Users/akitani/_dev"]
+command = "/Users/akitani/.local/bin/tokgain-mcpproxy"
+args = ["--agent", "codex", "--tool", "fff", "--base-path", "/Users/akitani/_dev", "--", "/opt/homebrew/bin/fff-mcp", "/Users/akitani/_dev"]
 ```
+
+既存互換のため `tokgain mcp-proxy ...` と `tokgain mcpproxy ...` も残しています。
 
 Codex / Hermes 以外へ展開しても `capture_mode` と `agent` で区別できます。イベントには raw output 本文ではなく、tokens / bytes / sha256 / redacted metadata を保存します。
 

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_measure(args)
         if args.command == "observe":
             return cmd_observe(args)
-        if args.command == "mcp-proxy":
+        if args.command in {"mcp-proxy", "mcpproxy"}:
             return cmd_mcp_proxy(args)
         if args.command == "report":
             return cmd_report(args)
@@ -52,9 +53,30 @@ def main(argv: list[str] | None = None) -> int:
     except BrokenPipeError:
         return 1
     except Exception as exc:  # pragma: no cover - defensive CLI boundary
-        print(f"tokgain: {exc}", file=os.sys.stderr)
+        print(f"tokgain: {exc}", file=sys.stderr)
         return 1
     return 2
+
+
+def mcp_proxy_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="tokgain-mcpproxy",
+        description="Run a transparent MCP stdio proxy and record token savings into tokgain.",
+    )
+    parser.add_argument("--data-dir", default=os.environ.get("TOKGAIN_DATA_DIR", str(DEFAULT_DATA_DIR)), help="state directory (default: ~/.local/state/tokgain)")
+    parser.add_argument("--prices", default=os.environ.get("TOKGAIN_PRICES"), help="manual prices.json path; when omitted, refresh LiteLLM + models.dev like ccusage")
+    parser.add_argument("--offline-prices", action="store_true", default=_env_truthy("TOKGAIN_PRICES_OFFLINE"), help="do not fetch live pricing; use --prices, cache, or packaged fallback")
+    parser.add_argument("--price-cache", default=os.environ.get("TOKGAIN_PRICE_CACHE"), help="price cache path (default: ~/.cache/tokgain/prices.json)")
+    _add_mcp_proxy_arguments(parser)
+    args = parser.parse_args(argv)
+    args.command = "mcp-proxy"
+    try:
+        return cmd_mcp_proxy(args)
+    except BrokenPipeError:
+        return 1
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        print(f"tokgain-mcpproxy: {exc}", file=sys.stderr)
+        return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -157,17 +179,8 @@ def build_parser() -> argparse.ArgumentParser:
     observe_mcp.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
     observe_mcp.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
 
-    mcp_proxy = sub.add_parser("mcp-proxy", help="transparent MCP stdio proxy that records tool savings")
-    mcp_proxy.add_argument("--agent", required=True, help="agent/runtime name, e.g. codex")
-    mcp_proxy.add_argument("--tool", required=True, help="logical tool/server being proxied, e.g. fff")
-    mcp_proxy.add_argument("--base-path", default=None, help="base path used to build baselines for file-search MCPs")
-    mcp_proxy.add_argument("--date", default=None, help="period date YYYY-MM-DD; default today for live observations")
-    mcp_proxy.add_argument("--model", default=None, help="explicit model override")
-    mcp_proxy.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
-    mcp_proxy.add_argument("--session-id", default=None, help="explicit session id/source run id")
-    mcp_proxy.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
-    mcp_proxy.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
-    mcp_proxy.add_argument("server_command", nargs=argparse.REMAINDER, help="real MCP server command after --")
+    mcp_proxy = sub.add_parser("mcp-proxy", aliases=["mcpproxy"], help="transparent MCP stdio proxy that records tool savings")
+    _add_mcp_proxy_arguments(mcp_proxy)
 
     report = sub.add_parser("report", help="print day/week summary")
     report.add_argument("--period", choices=["day", "week"], default="day")
@@ -198,6 +211,19 @@ def _add_runtime_context_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--turn-id", default=None, help="agent turn id for correlation")
     parser.add_argument("--tool-call-id", default=None, help="tool call id for correlation")
     parser.add_argument("--api-request-id", default=None, help="provider/API request id for correlation")
+
+
+def _add_mcp_proxy_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--agent", required=True, help="agent/runtime name, e.g. codex")
+    parser.add_argument("--tool", required=True, help="logical tool/server being proxied, e.g. fff")
+    parser.add_argument("--base-path", default=None, help="base path used to build baselines for file-search MCPs")
+    parser.add_argument("--date", default=None, help="period date YYYY-MM-DD; default today for live observations")
+    parser.add_argument("--model", default=None, help="explicit model override")
+    parser.add_argument("--metadata", default=None, help="session metadata JSON with model/session_id")
+    parser.add_argument("--session-id", default=None, help="explicit session id/source run id")
+    parser.add_argument("--tokenizer", choices=["auto", "regex", "tiktoken"], default=os.environ.get("TOKGAIN_TOKENIZER", "auto"))
+    parser.add_argument("--encoding", default=os.environ.get("TOKGAIN_TIKTOKEN_ENCODING", "o200k_base"))
+    parser.add_argument("server_command", nargs=argparse.REMAINDER, help="real MCP server command after --")
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
@@ -292,13 +318,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
             )
         )
     else:
-        print(json.dumps({"date": period, "tool": args.tool, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+        print(json.dumps({"date": period, "tool": args.tool, "error": event.get("error")}, ensure_ascii=False), file=sys.stderr)
     return return_code
 
 
 def cmd_measure(args: argparse.Namespace) -> int:
     if not getattr(args, "measure_tool", None):
-        print("tokgain measure: expected subcommand 'h5i' or 'fff'", file=os.sys.stderr)
+        print("tokgain measure: expected subcommand 'h5i' or 'fff'", file=sys.stderr)
         return 2
     data_dir = ensure_data_dir(args.data_dir)
     period = args.date or _default_period_date()
@@ -368,7 +394,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
             )
         )
     else:
-        print(json.dumps({"date": period, "tool": args.measure_tool, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+        print(json.dumps({"date": period, "tool": args.measure_tool, "error": event.get("error")}, ensure_ascii=False), file=sys.stderr)
     return return_code
 
 
@@ -377,7 +403,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
         return _cmd_observe_terminal(args)
     if getattr(args, "observe_source", None) == "mcp-call":
         return _cmd_observe_mcp_call(args)
-    print("tokgain observe: expected subcommand 'terminal' or 'mcp-call'", file=os.sys.stderr)
+    print("tokgain observe: expected subcommand 'terminal' or 'mcp-call'", file=sys.stderr)
     return 2
 
 
@@ -385,7 +411,7 @@ def _cmd_observe_terminal(args: argparse.Namespace) -> int:
     data_dir = ensure_data_dir(args.data_dir)
     period = args.date or datetime.now().astimezone().date().isoformat()
     metadata = _load_metadata(args.metadata)
-    output = os.sys.stdin.read()
+    output = sys.stdin.read()
     try:
         raw = build_terminal_observation_record(
             command=args.observed_command,
@@ -413,7 +439,7 @@ def _cmd_observe_terminal(args: argparse.Namespace) -> int:
         )
     except ObserveError as exc:
         event = _append_error_event(data_dir=data_dir, tool="observe", period=period, error=str(exc), cli_model=args.model, metadata=metadata, layer="observer")
-        print(json.dumps({"recorded": False, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+        print(json.dumps({"recorded": False, "error": event.get("error")}, ensure_ascii=False), file=sys.stderr)
         return 1
     measurement = (event.get("raw") or {}).get("measurement") or {}
     print(
@@ -437,7 +463,7 @@ def _cmd_observe_mcp_call(args: argparse.Namespace) -> int:
     period = args.date or datetime.now().astimezone().date().isoformat()
     metadata = _load_metadata(args.metadata)
     try:
-        payload = json.loads(os.sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.read() or "{}")
         if not isinstance(payload, dict):
             raise ObserveError("stdin JSON must be an object")
         raw = build_mcp_observation_record(
@@ -467,7 +493,7 @@ def _cmd_observe_mcp_call(args: argparse.Namespace) -> int:
         )
     except (ObserveError, json.JSONDecodeError) as exc:
         event = _append_error_event(data_dir=data_dir, tool=args.server_tool, period=period, error=str(exc), cli_model=args.model, metadata=metadata, layer="mcp-observer")
-        print(json.dumps({"recorded": False, "error": event.get("error")}, ensure_ascii=False), file=os.sys.stderr)
+        print(json.dumps({"recorded": False, "error": event.get("error")}, ensure_ascii=False), file=sys.stderr)
         return 1
     measurement = (event.get("raw") or {}).get("measurement") or {}
     print(
@@ -518,7 +544,7 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
             session_id=args.session_id,
         )
     except ProxyError as exc:
-        print(f"tokgain mcp-proxy: {exc}", file=os.sys.stderr)
+        print(f"tokgain-mcpproxy: {exc}", file=sys.stderr)
         return 1
 
 
@@ -583,7 +609,7 @@ def cmd_prices(args: argparse.Namespace) -> int:
     elif args.prices_command == "refresh":
         table = load_prices(None, offline=False, cache_path=args.price_cache, refresh=True)
     else:
-        print("tokgain prices: expected subcommand 'show' or 'refresh'", file=os.sys.stderr)
+        print("tokgain prices: expected subcommand 'show' or 'refresh'", file=sys.stderr)
         return 2
     print(json.dumps(table, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
