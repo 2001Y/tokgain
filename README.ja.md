@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-`tokgain` は、RTK / Headroom / lean-ctx / h5i / FFF などの token 節約量を、ローカルの JSONL に追記して後から集計する小さな CLI です。
+**token savings 版 ccusage.** `tokgain` は、RTK / Headroom / lean-ctx / h5i / FFF などの token 節約量を、ローカルの JSONL に追記して後から集計する小さな CLI です。
 
 方針:
 
@@ -13,6 +13,21 @@
 
 ## Quick start
 
+GitHub から `uvx` で直接実行:
+
+```bash
+uvx --from git+https://github.com/2001Y/tokgain tokgain --help
+```
+
+繰り返し使う場合:
+
+```bash
+uv tool install git+https://github.com/2001Y/tokgain
+tokgain --help
+```
+
+ローカル開発:
+
 ```bash
 git clone https://github.com/2001Y/tokgain.git
 cd tokgain
@@ -21,19 +36,37 @@ python3 -m venv .venv
 .venv/bin/tokgain --help
 ```
 
-1件だけ記録して確認:
+## 1分デモ
+
+raw output と optimized output を比較して1件記録します。
 
 ```bash
-.venv/bin/tokgain bench \
-  --tool rg \
-  --baseline-cmd 'rg "TODO|FIXME" .' \
-  --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
+tokgain bench --tool demo --model gpt-5.5 \
+  --baseline-cmd 'python3 - <<"PY"
+for i in range(200):
+    print(f"trace line {i}: repeated verbose tool output")
+PY' \
+  --optimized-cmd 'printf "summary: 200 repeated trace lines\n"'
+```
 
-.venv/bin/tokgain report --period day
+結果確認:
+
+```bash
+tokgain report --period day
+tokgain report --period month
 tail -n 5 ~/.local/state/tokgain/events.jsonl
 ```
 
-基本はこれだけです。計測または取り込みで JSONL に追記し、後から report します。
+出力例:
+
+```text
+2026-06-27 saved=1594 tokens usd=$0.007970 events=1 errors=0
+  demo: 1594 tokens $0.007970 (1 events)
+2026-06 saved=1594 tokens usd=$0.007970 events=1 errors=0
+  demo: 1594 tokens $0.007970 (1 events)
+```
+
+基本は「計測/取り込み → JSONL追記 → 後からreport」です。
 
 ## 何に使うか
 
@@ -54,7 +87,7 @@ tokgain measure fff --path PATH --query QUERY
 tokgain observe terminal --agent AGENT --command CMD < output.txt
 tokgain observe mcp-call --agent AGENT --server-tool TOOL --base-path PATH < payload.json
 tokgain mcp-proxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
-tokgain report --period day|week
+tokgain report --period day|week|month
 tokgain show --limit 20
 tokgain export --format jsonl|json
 tokgain doctor
@@ -137,6 +170,36 @@ tokgain measure fff --path . --query 'PrepareUpload'
 
 `measure h5i` は raw と `h5i capture run` でコマンドを2回実行します。副作用のない test/build/search/log 確認に限定してください。
 
+### 月次レポート例
+
+`tokgain report --period month` は Slack / cron / release note に貼りやすい短い出力を返します。
+
+```text
+2026-06 saved=1594 tokens usd=$0.007970 events=1 errors=0
+  demo: 1594 tokens $0.007970 (1 events)
+```
+
+構造化して使う場合:
+
+```bash
+tokgain report --period month --json
+```
+
+### PyPI 公開状態
+
+package metadata と GitHub Actions の publish workflow は PyPI-ready です。初回 PyPI release までは GitHub 経由の `uvx` を使います。
+
+```bash
+uvx --from git+https://github.com/2001Y/tokgain tokgain --help
+```
+
+PyPI 公開後は短い形で使えます。
+
+```bash
+uvx tokgain --help
+uv tool install tokgain
+```
+
 ## 開発
 
 ```bash
@@ -146,6 +209,14 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/pytest -q
 .venv/bin/python -m tokgain.cli --help
+```
+
+build / packaging check:
+
+```bash
+uv build
+uvx twine check dist/*
+uvx --from . tokgain --help
 ```
 
 ## 方針

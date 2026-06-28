@@ -17,7 +17,7 @@ from .measure import MeasureError, build_fff_measure_record, build_h5i_measure_r
 from .mcp_proxy import ProxyError, run_mcp_proxy
 from .observe import ObserveError, build_mcp_observation_record, build_terminal_observation_record
 from .pricing import estimate_usd, load_prices
-from .store import SCHEMA_VERSION, append_events, build_daily_summary, build_week_summary, ensure_data_dir, read_events, update_state, write_daily_summary
+from .store import SCHEMA_VERSION, append_events, build_daily_summary, build_month_summary, build_week_summary, ensure_data_dir, read_events, update_state, write_daily_summary
 
 DEFAULT_DATA_DIR = Path("~/.local/state/tokgain").expanduser()
 MODEL_MISSING = "model_missing"
@@ -161,9 +161,9 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_proxy = sub.add_parser("mcp-proxy", help="transparent MCP stdio proxy that records tool savings")
     _add_mcp_proxy_arguments(mcp_proxy)
 
-    report = sub.add_parser("report", help="print day/week summary")
-    report.add_argument("--period", choices=["day", "week"], default="day")
-    report.add_argument("--date", default=None, help="day or week end date YYYY-MM-DD; default yesterday")
+    report = sub.add_parser("report", help="print day/week/month summary")
+    report.add_argument("--period", choices=["day", "week", "month"], default="day")
+    report.add_argument("--date", default=None, help="date YYYY-MM-DD; day date, week end date, or any date in the month; default yesterday")
     report.add_argument("--json", action="store_true", help="print JSON summary")
 
     show = sub.add_parser("show", help="print recent JSONL events")
@@ -531,6 +531,8 @@ def cmd_report(args: argparse.Namespace) -> int:
     date = args.date or _default_period_date()
     if args.period == "week":
         summary = build_week_summary(args.data_dir, date)
+    elif args.period == "month":
+        summary = build_month_summary(args.data_dir, date)
     else:
         summary = build_daily_summary(args.data_dir, date)
     if args.json:

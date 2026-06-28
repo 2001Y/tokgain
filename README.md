@@ -2,7 +2,7 @@
 
 [日本語版 README](README.ja.md)
 
-`tokgain` is a small local CLI for measuring and aggregating token savings from coding-agent compression tools such as RTK, Headroom, lean-ctx, h5i, and FFF.
+**ccusage for token savings.** `tokgain` is a small local CLI for measuring and aggregating token savings from coding-agent compression tools such as RTK, Headroom, lean-ctx, h5i, and FFF.
 
 It is intentionally file-first:
 
@@ -13,6 +13,21 @@ It is intentionally file-first:
 
 ## Quick start
 
+Run directly with `uvx` from GitHub:
+
+```bash
+uvx --from git+https://github.com/2001Y/tokgain tokgain --help
+```
+
+Or install for repeated local use:
+
+```bash
+uv tool install git+https://github.com/2001Y/tokgain
+tokgain --help
+```
+
+For local development:
+
 ```bash
 git clone https://github.com/2001Y/tokgain.git
 cd tokgain
@@ -21,20 +36,34 @@ python3 -m venv .venv
 .venv/bin/tokgain --help
 ```
 
-Record one savings event by comparing raw output with optimized output:
+## One-minute demo
+
+Record one event by comparing raw output with optimized output:
 
 ```bash
-.venv/bin/tokgain bench \
-  --tool rg \
-  --baseline-cmd 'rg "TODO|FIXME" .' \
-  --optimized-cmd 'rg "TODO|FIXME" . --glob "!node_modules" | head -80'
+tokgain bench --tool demo --model gpt-5.5 \
+  --baseline-cmd 'python3 - <<"PY"
+for i in range(200):
+    print(f"trace line {i}: repeated verbose tool output")
+PY' \
+  --optimized-cmd 'printf "summary: 200 repeated trace lines\n"'
 ```
 
 View the result:
 
 ```bash
-.venv/bin/tokgain report --period day
+tokgain report --period day
+tokgain report --period month
 tail -n 5 ~/.local/state/tokgain/events.jsonl
+```
+
+Example output:
+
+```text
+2026-06-27 saved=1594 tokens usd=$0.007970 events=1 errors=0
+  demo: 1594 tokens $0.007970 (1 events)
+2026-06 saved=1594 tokens usd=$0.007970 events=1 errors=0
+  demo: 1594 tokens $0.007970 (1 events)
 ```
 
 That is the core workflow: measure or import savings, append JSONL events, then report later.
@@ -61,7 +90,7 @@ tokgain measure fff --path PATH --query QUERY
 tokgain observe terminal --agent AGENT --command CMD < output.txt
 tokgain observe mcp-call --agent AGENT --server-tool TOOL --base-path PATH < payload.json
 tokgain mcp-proxy --agent codex --tool fff --base-path PATH -- fff-mcp PATH
-tokgain report --period day|week
+tokgain report --period day|week|month
 tokgain show --limit 20
 tokgain export --format jsonl|json
 tokgain doctor
@@ -183,6 +212,36 @@ tokgain measure fff --path . --query 'PrepareUpload'
 
 `measure h5i` runs the command twice: raw and via `h5i capture run`. Use it only for repeatable commands such as tests, builds, searches, and log inspection.
 
+### Monthly report example
+
+`tokgain report --period month` prints a compact line that can be pasted into Slack, cron, or a release note:
+
+```text
+2026-06 saved=1594 tokens usd=$0.007970 events=1 errors=0
+  demo: 1594 tokens $0.007970 (1 events)
+```
+
+For a structured downstream workflow:
+
+```bash
+tokgain report --period month --json
+```
+
+### PyPI publishing status
+
+The package metadata and GitHub Actions publish workflow are PyPI-ready. Until the first PyPI release is published, use the GitHub `uvx` form:
+
+```bash
+uvx --from git+https://github.com/2001Y/tokgain tokgain --help
+```
+
+After the first PyPI release, the shorter form will work:
+
+```bash
+uvx tokgain --help
+uv tool install tokgain
+```
+
 ## Development
 
 ```bash
@@ -192,6 +251,14 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/pytest -q
 .venv/bin/python -m tokgain.cli --help
+```
+
+Build and packaging checks:
+
+```bash
+uv build
+uvx twine check dist/*
+uvx --from . tokgain --help
 ```
 
 ## Project stance

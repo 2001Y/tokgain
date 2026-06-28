@@ -1,21 +1,33 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokgain"
 version = "0.1.0"
-description = "Local token savings collector for coding-agent compression tools"
+description = "ccusage-style local JSONL token-savings ledger for coding-agent compression tools"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "tokgain contributors"}]
-keywords = ["codex", "claude", "tokens", "savings", "cli"]
+keywords = ["agent", "ccusage", "claude-code", "cli", "codex", "hermes", "llm", "mcp", "tokens", "savings"]
 classifiers = [
-  "Programming Language :: Python :: 3",
+  "Development Status :: 3 - Alpha",
   "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development",
   "Topic :: Utilities",
 ]
+
+[project.urls]
+Homepage = "https://github.com/2001Y/tokgain"
+Repository = "https://github.com/2001Y/tokgain"
+Issues = "https://github.com/2001Y/tokgain/issues"
 
 [project.scripts]
 tokgain = "tokgain.cli:main"

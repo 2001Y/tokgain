@@ -680,13 +680,28 @@ def test_report_show_export_and_prices_commands(tmp_path):
         "incomplete": False,
         "exclude_from_totals": False,
     }
-    (data_dir / "events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+    month_event = dict(event, ts="2026-06-30T00:00:00+09:00", period="2026-06-30", saved_tokens=50, saved_input_tokens=50, usd_saved_estimate=0.00005, session_id="s2")
+    next_month_event = dict(event, ts="2026-07-01T00:00:00+09:00", period="2026-07-01", saved_tokens=999, saved_input_tokens=999, usd_saved_estimate=0.000999, session_id="s3")
+    (data_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in [event, month_event, next_month_event]) + "\n",
+        encoding="utf-8",
+    )
     prices = write_prices(tmp_path / "prices.json")
 
     report = run_cli(["--data-dir", str(data_dir), "report", "--period", "day", "--date", "2026-06-21", "--json"])
     assert report.returncode == 0, report.stderr + report.stdout
     payload = json.loads(report.stdout)
     assert payload["totals"]["reported_saved_tokens"] == 100
+
+    month_report = run_cli(["--data-dir", str(data_dir), "report", "--period", "month", "--date", "2026-06-15", "--json"])
+    assert month_report.returncode == 0, month_report.stderr + month_report.stdout
+    month_payload = json.loads(month_report.stdout)
+    assert month_payload["period"] == "month"
+    assert month_payload["label"] == "2026-06"
+    assert month_payload["start_date"] == "2026-06-01"
+    assert month_payload["end_date"] == "2026-06-30"
+    assert month_payload["totals"]["reported_saved_tokens"] == 150
+    assert month_payload["totals"]["reported_saved_usd"] == 0.00015
 
     show = run_cli(["--data-dir", str(data_dir), "show", "--tool", "rtk", "--limit", "1"])
     assert show.returncode == 0, show.stderr + show.stdout

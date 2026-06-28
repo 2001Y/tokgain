@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date as date_type, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -127,6 +127,22 @@ def build_week_summary(data_dir: str | Path, end_date: str) -> dict[str, Any]:
     summary["start_date"] = days[0]
     summary["end_date"] = days[-1]
     summary["label"] = f"{days[0]}..{days[-1]}"
+    return summary
+
+
+def build_month_summary(data_dir: str | Path, month_date: str) -> dict[str, Any]:
+    anchor = datetime.strptime(month_date, "%Y-%m-%d").date()
+    start = anchor.replace(day=1)
+    if anchor.month == 12:
+        next_month = date_type(anchor.year + 1, 1, 1)
+    else:
+        next_month = date_type(anchor.year, anchor.month + 1, 1)
+    end = next_month - timedelta(days=1)
+    events = [event for event in read_events(data_dir) if start.isoformat() <= str(event.get("period") or "") <= end.isoformat()]
+    summary = summarize_events(events, date=None, period="month")
+    summary["start_date"] = start.isoformat()
+    summary["end_date"] = end.isoformat()
+    summary["label"] = f"{anchor.year:04d}-{anchor.month:02d}"
     return summary
 
 
