@@ -170,26 +170,42 @@ def update_state(data_dir: str | Path, *, date: str, events: list[dict[str, Any]
 def _empty_bucket() -> dict[str, Any]:
     return {
         "event_count": 0,
+        "observed_call_count": 0,
+        "observed_duration_ms": 0,
         "reported_saved_tokens": 0,
         "reported_saved_input_tokens": 0,
         "reported_saved_output_tokens": 0,
         "reported_saved_cache_creation_tokens": 0,
         "reported_saved_cache_read_tokens": 0,
         "reported_saved_usd": 0.0,
+        "_turn_ids": set(),
+        "_tool_call_ids": set(),
+        "_api_request_ids": set(),
     }
 
 
 def _add_to_bucket(bucket: dict[str, Any], event: dict[str, Any]) -> None:
     bucket["event_count"] += 1
+    bucket["observed_call_count"] += int(event.get("observed_call_count") or 0)
+    bucket["observed_duration_ms"] += int(event.get("duration_ms") or 0)
     bucket["reported_saved_tokens"] += int(event.get("saved_tokens") or 0)
     bucket["reported_saved_input_tokens"] += int(event.get("saved_input_tokens") or 0)
     bucket["reported_saved_output_tokens"] += int(event.get("saved_output_tokens") or 0)
     bucket["reported_saved_cache_creation_tokens"] += int(event.get("saved_cache_creation_tokens") or 0)
     bucket["reported_saved_cache_read_tokens"] += int(event.get("saved_cache_read_tokens") or 0)
     bucket["reported_saved_usd"] += float(event.get("usd_saved_estimate") or 0.0)
+    if event.get("turn_id"):
+        bucket["_turn_ids"].add(str(event["turn_id"]))
+    if event.get("tool_call_id"):
+        bucket["_tool_call_ids"].add(str(event["tool_call_id"]))
+    if event.get("api_request_id"):
+        bucket["_api_request_ids"].add(str(event["api_request_id"]))
 
 
 def _finalize_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
     finalized = dict(bucket)
+    finalized["unique_turn_count"] = len(finalized.pop("_turn_ids", set()))
+    finalized["unique_tool_call_count"] = len(finalized.pop("_tool_call_ids", set()))
+    finalized["unique_api_request_count"] = len(finalized.pop("_api_request_ids", set()))
     finalized["reported_saved_usd"] = round(float(finalized["reported_saved_usd"]), 10)
     return finalized

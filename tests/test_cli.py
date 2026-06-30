@@ -759,11 +759,18 @@ def test_observe_h5i_terminal_hook_parses_reduction_from_stdin(tmp_path):
     assert event["turn_id"] == "turn-1"
     assert event["tool_call_id"] == "tool-call-1"
     assert event["api_request_id"] == "api-1"
+    assert event["observed_call_count"] == 1
     measurement = event["raw"]["measurement"]
     assert measurement["capture_mode"] == "hermes_hook"
     assert measurement["baseline_tokens"] == 100
     assert measurement["optimized_tokens"] == 10
     assert measurement["agent"] == "hermes"
+
+    daily = json.loads((data_dir / "daily" / "2026-06-21.json").read_text(encoding="utf-8"))
+    assert daily["totals"]["observed_call_count"] == 1
+    assert daily["totals"]["unique_tool_call_count"] == 1
+    assert daily["totals"]["unique_api_request_count"] == 1
+    assert daily["totals"]["observed_duration_ms"] == 1234
 
 
 def test_observe_ast_grep_terminal_hook_compares_rg_baseline(tmp_path):

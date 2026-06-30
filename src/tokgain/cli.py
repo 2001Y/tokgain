@@ -539,9 +539,13 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         totals = summary["totals"]
-        print(f"{summary['label']} saved={totals['reported_saved_tokens']} tokens usd=${totals['reported_saved_usd']:.6f} events={summary['event_count']} errors={summary['error_count']}")
+        calls = totals.get("observed_call_count", 0)
+        api_calls = totals.get("unique_api_request_count", 0)
+        call_part = f" observed_calls={calls} api_requests={api_calls}" if calls or api_calls else ""
+        print(f"{summary['label']} saved={totals['reported_saved_tokens']} tokens usd=${totals['reported_saved_usd']:.6f} events={summary['event_count']} errors={summary['error_count']}{call_part}")
         for tool, bucket in summary.get("by_tool", {}).items():
-            print(f"  {tool}: {bucket['reported_saved_tokens']} tokens ${bucket['reported_saved_usd']:.6f} ({bucket['event_count']} events)")
+            tool_call_part = f" observed_calls={bucket.get('observed_call_count', 0)}" if bucket.get("observed_call_count") else ""
+            print(f"  {tool}: {bucket['reported_saved_tokens']} tokens ${bucket['reported_saved_usd']:.6f} ({bucket['event_count']} events{tool_call_part})")
     return 0
 
 
@@ -662,6 +666,7 @@ def _finalize_ok_event(raw: dict[str, Any], *, period: str, prices: dict[str, An
         "turn_id": _runtime_field(raw, metadata, "turn_id", "TOKGAIN_TURN_ID"),
         "tool_call_id": _runtime_field(raw, metadata, "tool_call_id", "TOKGAIN_TOOL_CALL_ID"),
         "api_request_id": _runtime_field(raw, metadata, "api_request_id", "TOKGAIN_API_REQUEST_ID"),
+        "observed_call_count": int(raw.get("observed_call_count") or 0),
         "incomplete": incomplete,
         "exclude_from_totals": incomplete,
         "raw": raw.get("raw"),
@@ -708,6 +713,7 @@ def _error_event(tool: str, *, period: str, error: str, cli_model: str | None, m
         "turn_id": _runtime_field({}, metadata, "turn_id", "TOKGAIN_TURN_ID"),
         "tool_call_id": _runtime_field({}, metadata, "tool_call_id", "TOKGAIN_TOOL_CALL_ID"),
         "api_request_id": _runtime_field({}, metadata, "api_request_id", "TOKGAIN_API_REQUEST_ID"),
+        "observed_call_count": 0,
         "incomplete": model == MODEL_MISSING,
         "exclude_from_totals": True,
         "error": error,
@@ -774,6 +780,7 @@ def _event_id(event: dict[str, Any]) -> str:
         "turn_id": event.get("turn_id"),
         "tool_call_id": event.get("tool_call_id"),
         "api_request_id": event.get("api_request_id"),
+        "observed_call_count": event.get("observed_call_count"),
         "source_event_id": raw.get("source_event_id"),
         "baseline_ref": measurement.get("baseline_ref"),
         "optimized_ref": measurement.get("optimized_ref"),

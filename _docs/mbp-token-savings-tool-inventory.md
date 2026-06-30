@@ -60,6 +60,8 @@
 2. Native ledger が無いものは、存在しない stats コマンドを推測せず `tokgain bench` で baseline / optimized の出力を比較する。
 3. `events.jsonl` は1つのまま。`bench` も同じ event schema に正規化する。
 4. `saved_tokens` が負数でも残す。効果が無い/悪化したケースも後から集計できるようにする。
+5. 自然利用の hook / MCP proxy 経由 event は `observed_call_count`, `duration_ms`, `turn_id`, `tool_call_id`, `api_request_id` を保存する。token 節約量だけでなく「何コール使って得た節約か」を report JSON の `observed_call_count` / `unique_*_count` で確認する。
+6. 2026-07-01 時点の実機確認: `/Users/akitani/.local/bin/tokgain` が壊れた symlink になっていたため、Hermes plugin と Codex MCP proxy が実行できない状態だった。`uv tool install --reinstall /Users/akitani/_dev/tokgain` で復旧し、Hermes plugin は binary 不在時も `python -m tokgain.cli` へ fallback する。
 
 ## 代表コマンド
 

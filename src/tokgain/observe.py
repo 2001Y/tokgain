@@ -120,6 +120,7 @@ def build_mcp_observation_record(
             "optimized_sha256": _sha256(result_text),
         }
     )
+    raw["observed_call_count"] = 1
     return raw
 
 
@@ -187,6 +188,7 @@ def _build_h5i_observation(
         "saved_tokens": saved_tokens,
         "saved_input_tokens": saved_tokens,
         "saved_output_tokens": None,
+        "observed_call_count": 1,
         "source_ref": f"{capture_mode}:h5i:{_redact_command(command)}",
         "session_id": session_id,
         "raw": {"measurement": measurement},
@@ -239,6 +241,7 @@ def _build_ast_grep_observation(
             "command": _redact_command(command),
         }
     )
+    raw["observed_call_count"] = 1
     return raw
 
 

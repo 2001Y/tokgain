@@ -112,6 +112,8 @@ Default state directory:
 
 Each event includes a stable `event_id`. Appending skips existing `event_id`s so re-importing the same native source record does not double count it. Semantic overlap between different tools or layers is not deduplicated in the first version.
 
+Natural-use observations can also carry call-side context: `observed_call_count`, `duration_ms`, `turn_id`, `tool_call_id`, and `api_request_id`. Reports aggregate these as observed calls and unique IDs so token savings can be read together with “how many calls did this cost?”.
+
 Typical fields:
 
 ```json

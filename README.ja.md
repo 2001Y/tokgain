@@ -107,6 +107,8 @@ tokgain prices show
 
 各 event には安定した `event_id` が付きます。同じ native source record を再取り込みしても二重計上しません。異なる tool/layer 間の意味的重複は初版では排除しません。
 
+自然利用の観測 event には `observed_call_count`, `duration_ms`, `turn_id`, `tool_call_id`, `api_request_id` も入ります。report では observed calls と unique ID 数を集計し、token 節約量と「そのために何コール使ったか」を一緒に見られます。
+
 ## 設定・応用
 
 Quick start には最小引数だけ載せ、環境依存の設定はここに分けます。
